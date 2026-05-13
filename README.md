@@ -56,9 +56,21 @@ Important operator setup notes:
 
 <table>
   <tr>
-    <td width="220" align="center" valign="middle">
+    <td width="440" align="center" valign="middle">
+      <a href="https://www.rapidproxy.io/?ref=saif">
+        <img src="assets/rapidproxy-banner.png" alt="RapidProxy banner" width="420" />
+      </a>
+    </td>
+    <td valign="top">
+      <strong>RapidProxy</strong> provides 90M+ residential proxy IPs across 190+ countries. High anonymity, low block rates, and stable speed — ideal for automation and AI data collection. Pricing starts from $0.65/GB with non-expiring traffic. Use code <strong>RAPID10</strong> to get 10% off.
+      <br />
+      <a href="https://www.rapidproxy.io/?ref=saif"><strong>Try RapidProxy now</strong></a> &nbsp;|&nbsp; <a href="https://t.me/erhutongzi"><strong>Contact us</strong></a>
+    </td>
+  </tr>
+  <tr>
+    <td width="440" align="center" valign="middle">
       <a href="https://birdproxies.com/t/headlessx">
-        <img src="assets/bird-proxy.png" alt="BirdProxies banner" width="200" />
+        <img src="assets/bird-proxy.png" alt="BirdProxies banner" width="420" />
       </a>
     </td>
     <td valign="top">
