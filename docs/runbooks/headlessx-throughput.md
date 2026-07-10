@@ -7,13 +7,14 @@ requests/min long-term and understand the tradeoffs.
 
 ## TL;DR
 
-- **The dominant knob is `camoufoxBlockImages`.** Blocking images dropped html-js
-  render latency on gwun.com from **~55s → ~5.8s** (10×) — gwun.com's images kept
-  `networkidle` from settling. This single change moves throughput from ~2 req/min
-  to ~20 req/min at concurrency 2.
-- **With images blocked + humanize=0, the host sustains ~42–56 req/min at
-  maxConcurrency 5** (the current cap). 20 req/min needs c≈2–3; ~50 req/min is the
-  practical ceiling at c=5.
+- **The dominant knob is `camoufoxHumanize`, not blockImages.** `humanize=0` →
+  ~5.3s/render; `humanize=2.5` (default, full behavioral anti-detection) → ~55s/render
+  — a 10× swing. blockImages is only ~0.5s (verified: humanize=0 + images ON = 5.3s).
+- **With humanize=0, the host sustains ~42–56 req/min at maxConcurrency 5** (the
+  current cap). 20 req/min needs c≈2–3; ~50 req/min is the practical ceiling at c=5.
+- **With humanize ON (2.5, anti-detection mode), the limit is ~2 req/min @ c=2,
+  ~5 @ c=5** (~55s/render). You cannot reach 20–100 req/min with humanize on.
+  humanize is behavioral anti-detection — it does NOT hide your home IP (see below).
 - **100 req/min is NOT reachable on this host at the current maxConcurrency cap
   (5).** Hitting 100 requires raising the cap (see below) or a bigger host.
 - **Residential proxies** wire in per-request via `options.proxy` (e.g.
@@ -45,8 +46,8 @@ x-api-key client). Confirmed PATCH-able fields:
 |---|---|---|
 | `maxConcurrency` | 5 (env `MAX_CONCURRENCY`) | Max concurrent browser renders. **Appears capped at 5** — PATCH to 10 did not persist (server-side validation; see below). The throughput ceiling knob. |
 | `browserTimeout` | 60000 (env `BROWSER_TIMEOUT`) | Default per-render timeout (ms). |
-| `camoufoxBlockImages` | false | **Biggest throughput lever.** `true` = don't load images → `networkidle` settles fast. 55s→5.8s on gwun.com. Tradeoff: no images (fine for text/data; not for screenshots). |
-| `camoufoxHumanize` | 2.5 | Seconds of human-like delay. `0` saves ~2.5s; slightly less human-like. |
+| `camoufoxBlockImages` | false | Minor lever (~0.5s). `true` = don't load images. Does NOT compensate for humanize (humanize=2.5 + blockImages=true is still ~55s). Tradeoff: no images (fine for text/data; not for screenshots). |
+| `camoufoxHumanize` | 2.5 | **Dominant throughput knob.** `0` = no behavioral sim → ~5.3s/render. `2.5` (default) = full human-like behavioral sim (mouse/scroll/typing + networkidle) → ~55s/render. 10× swing. Tradeoff: ON = anti-detection but ~2 req/min; OFF = fast but less human-like. |
 | `camoufoxEnableCache` | true | Reuse browser profile/cache. Keep on. |
 | `camoufoxGeoip` | true | Geoip-matched fingerprint. Off may speed startup slightly; loses geo-consistency. |
 | `camoufoxBlockWebrtc` | true | Blocks WebRTC leaks. Keep on (anti-detection). |
@@ -72,12 +73,14 @@ opd once, never prints it). Config restored to shipped defaults after testing.
 
 | # | Config | Endpoint | Conc | Total | req/min | p50 (ms) | p95 (ms) | Errors | Notes |
 |---|---|---|---|---|---|---|---|---|---|
-| 1a | default (images+humanize ON) | html-js | 2 | 4 | 2.1 | 55287 | 57011 | 0 | networkidle waits on images |
-| 1b | default | html-js | 5 | 10 | 3.3 | 90003 | 90008 | 10 (aborted) | CPU contention at c=5 ⇒ >90s ⇒ client timeout |
-| 2 | blockImages=true, humanize=0 | html-js | 2 | 4 | **20.3** | 5765 | 6070 | 0 | 10× faster than baseline |
-| 3a | blockImages=true, humanize=0 | html-js | 5 | 15 | **41.6** | 7180 | 7918 | 0 | maxConcurrency=5 |
-| 3b | blockImages=true, humanize=0 | html-js | 10 | 20 | 55.6 | 10115 | 12241 | 0 | maxConcurrency capped at 5 (PATCH→10 didn't take); effective c=5 |
-| 4 | blockImages=true, humanize=0 | html (no-JS) | 5 | 15 | **56.0** | 5027 | 6418 | 0 | slightly faster than html-js; no JS |
+| 1a | humanize=2.5, images ON (default) | html-js | 2 | 4 | 2.1 | 55287 | 57011 | 0 | humanize=2.5 behavioral sim → ~55s |
+| 1b | humanize=2.5 (default) | html-js | 5 | 10 | 3.3 | 90003 | 90008 | 10 (aborted) | CPU contention at c=5 ⇒ >90s ⇒ client timeout |
+| 2 | humanize=0, blockImages=true | html-js | 2 | 4 | **20.3** | 5765 | 6070 | 0 | humanize=0 is the lever (10×) |
+| 2b | humanize=0, blockImages=**false** | html-js | 2 | 4 | 19.7 | 5341 | — | 0 | isolates humanize: ~5.3s even with images ON |
+| 2c | humanize=2.5, blockImages=true | html-js | 2 | 4 | 2.1 | 55284 | 57840 | 0 | blockImages doesn't help when humanize ON (~55s) |
+| 3a | humanize=0, blockImages=true | html-js | 5 | 15 | **41.6** | 7180 | 7918 | 0 | maxConcurrency=5 |
+| 3b | humanize=0, blockImages=true | html-js | 10 | 20 | 55.6 | 10115 | 12241 | 0 | maxConcurrency capped at 5 (PATCH→10 didn't take); effective c=5 |
+| 4 | humanize=0, blockImages=true | html (no-JS) | 5 | 15 | **56.0** | 5027 | 6418 | 0 | slightly faster than html-js; no JS |
 
 **Memory**: never exceeded ~3.6 GB used / 12+ GB free — Camoufox browsers are
 ~50–80 MB each at this concurrency. Memory is **not** the bottleneck; CPU (4
@@ -99,27 +102,63 @@ cores) is — concurrency beyond ~5 makes per-render latency climb (5.8s→7.2s�
      per-render leaves headroom for higher concurrency).
 - **Latency vs throughput**: higher concurrency raises throughput but increases
   p50/p95 latency (contention). For interactive use, keep c≤3; for batch, push c.
-- **blockImages tradeoff**: 10× speedup, but no images. For data/text extraction
-  (the data-lane SPA use case), this is the right default. For screenshot/visual
-  QA, leave images on (and accept ~55s/render — use the `browser` skill instead
-  for one-off visual checks).
-- **humanize tradeoff**: ~2.5s saved. For anti-bot-protected targets, keep
-  humanize on; for cooperative public pages, off is fine.
+- **blockImages tradeoff**: minor (~0.5s). Useful for scraping where you don't
+  need images, but does NOT unlock throughput on its own (humanize drives the 10×).
+- **humanize tradeoff (the big one)**: 10× (5.3s vs 55s). ON = behavioral
+  anti-detection but caps you at ~2–5 req/min. OFF = 20–50 req/min but less
+  human-like. For bot-protected targets behind a rotating proxy, OFF is usually
+  fine — the IP rotation provides the anti-ban, not the behavior.
 - **stealth tradeoff**: `html-js` defaults stealth on (anti-detection). For
   non-protected public pages, `stealth=false` + `html` is fastest.
 
-### Recommended production config (data-lane SPA scraping, ~50 req/min)
+### Recommended production config (data-lane SPA scraping, ~50 req/min, behind a proxy)
 
 ```
 PATCH /api/config {
-  "camoufoxBlockImages": true,
-  "camoufoxHumanize": 0,
+  "camoufoxHumanize": 0,          // the 10× lever; safe behind a rotating proxy
   "maxConcurrency": 5            // current cap; raise via MAX_CONCURRENCY env to exceed
+  // blockImages: optional (~0.5s); set true only if you don't need images
 }
 ```
-Per-request: use `html-js` + `stealth=true` for SPA/bot-protected pages;
-`html` + `stealth=false` for static public pages. Set a `waitForSelector` for
-slow-settling SPAs to avoid `networkidle` waits.
+Per-request: `options.proxy` = a rotating residential proxy URL; use `html-js` +
+`stealth=true` for SPA/bot-protected pages, `html` + `stealth=false` for static.
+Set a `waitForSelector` for slow-settling SPAs to avoid `networkidle` waits.
+
+If you must run WITHOUT a proxy (home IP exposed): keep `camoufoxHumanize=2.5` ON
+for behavioral cover, but accept the ~2 req/min ceiling and rotate targets — and
+see the home-IP section below for why this is fragile.
+
+## humanize ON, anti-detection, and your home IP
+
+headlessx runs on the beelink at your house — every scrape egresses from your
+**home residential IP**. Two separate concerns, often conflated:
+
+1. **Behavioral anti-detection (humanize/stealth)**: makes each request look
+   human (mouse movement, timing, fingerprint). Reduces the chance a target's
+   bot-detection flags the *request*. Does NOT change the IP.
+2. **IP-based rate-limiting/bans**: a target seeing N requests/min from ONE IP
+   (your home IP) may rate-limit, CAPTCHA, or ban that IP — *regardless of how
+   human each request looks*. humanize does NOT prevent this.
+
+**So: humanize ON protects against behavioral detection, NOT volume-based IP
+bans.** Scraping external targets (Wix/FAA/FBO) at any real volume from your home
+IP risks getting your home IP blocked by those targets — and a blocked home IP
+affects everything else on your household network.
+
+**Recommendation: do not scrape external targets directly from the home IP at
+volume. Route scraping through residential proxies** (per-request `options.proxy`,
+or global `PATCH /api/config` proxy). Then:
+- targets see rotating proxy IPs, not your home IP — volume is spread across many
+  IPs, so no single IP gets banned;
+- your home IP only talks to the proxy gateway (low volume, looks normal);
+- you can run `humanize=0` (fast, 20–50 req/min) safely, because the IP rotation
+  provides the anti-ban — you don't need behavioral humanization when the IP
+  changes every request;
+- cost: ~$3–5/GB (Decodo/IPRoyal) at 5–50 GB/mo — see the table below.
+
+**Bottom line on the humanize-ON limit:** ~2 req/min @ c=2 (~5 @ c=5). It is the
+anti-detection ceiling, not a throughput target. For 20–100 req/min you need
+`humanize=0` + proxies (so the home IP stays clean).
 
 ## Residential proxy research
 
