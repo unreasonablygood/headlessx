@@ -1,0 +1,48 @@
+# docker-compose.headfox.yml — dedicated compose for the headfox-js Camoufox server.
+#
+# Deployed as a SEPARATE Coolify app so it does NOT touch the running headlessx-v2
+# scrape stack (postgres/redis/api/...). `browser remote` (pi-config browser skill)
+# attaches to this server's wsEndpoint via `playwright-cli attach`, driving the
+# remote anti-detection Camoufox for interactive flows.
+#
+# The wsEndpoint secret (ws://<tailscale-ip>:<HEADFOX_HOST_PORT>/<HEADFOX_WS_PATH>)
+# is minted to 1Password as op://m3_local/HEADFOX_ENDPOINT/credential and resolved
+# value-blind by the browser skill. Auth boundary = Tailscale (port only reachable
+# on the tailnet) + the secret ws_path token.
+#
+# Dedicated ipam subnet (10.99.1.0/24) to avoid the beelink's docker network-pool
+# exhaustion (documented in docs/runbooks/headlessx-throughput.md).
+services:
+  headfox-server:
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    working_dir: /app
+    command: ['node', '/app/infra/docker/headfox-server.mjs']
+    restart: unless-stopped
+    environment:
+      - HEADFOX_PORT=${HEADFOX_PORT:-9334}
+      - HEADFOX_WS_PATH=${HEADFOX_WS_PATH}
+      - HEADFOX_HUMANIZE=${HEADFOX_HUMANIZE:-0}
+      - HEADFOX_GEOIP=${HEADFOX_GEOIP:-false}
+      - HEADFOX_BLOCK_WEBRTC=${HEADFOX_BLOCK_WEBRTC:-true}
+      - HEADFOX_BLOCK_IMAGES=${HEADFOX_BLOCK_IMAGES:-false}
+      - HEADFOX_ENABLE_CACHE=${HEADFOX_ENABLE_CACHE:-true}
+      - HEADFOX_HEADLESS=${HEADFOX_HEADLESS:-true}
+    ports:
+      - '${HEADFOX_HOST_PORT:-38474}:${HEADFOX_PORT:-9334}'
+    volumes:
+      - headfox_profile:/app/.headfox/profile
+    networks:
+      - headfox-network
+
+volumes:
+  headfox_profile:
+
+networks:
+  headfox-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.99.1.0/24

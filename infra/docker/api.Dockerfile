@@ -42,6 +42,7 @@ COPY nx.json ./
 COPY apps/api ./apps/api
 COPY infra/docker/api-entrypoint.sh /usr/local/bin/headlessx-api-entrypoint
 COPY infra/docker/worker-entrypoint.sh /usr/local/bin/headlessx-worker-entrypoint
+COPY infra/docker/headfox-server.mjs /app/infra/docker/headfox-server.mjs
 
 # Install dependencies
 RUN pnpm install --frozen-lockfile
