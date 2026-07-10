@@ -131,3 +131,7 @@ volumes:
 networks:
   headlessx-network:
     driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.99.0.0/24
