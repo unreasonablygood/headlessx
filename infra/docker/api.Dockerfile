@@ -56,6 +56,12 @@ RUN pnpm exec headfox-js fetch
 WORKDIR /app
 RUN pnpm exec nx run headlessx-api:build
 
+# Fetch CAPTCHA classification model (baked in at cwd/models = /app/apps/api/models;
+# Coolify host has no repo checkout to bind-mount). Detection model (yolo26x.onnx) needs a
+# heavier PyTorch ultralytics export — tracked as a follow-up bead; service degrades without it.
+RUN mkdir -p apps/api/models && \
+    python3 -c "import urllib.request; urllib.request.urlretrieve('https://huggingface.co/DannyLuna/recaptcha-classification-57k/resolve/main/recaptcha_classification_57k.onnx', 'apps/api/models/recaptcha_classification_57k.onnx')"
+
 # Start the API
 WORKDIR /app/apps/api
 RUN chmod +x /usr/local/bin/headlessx-api-entrypoint /usr/local/bin/headlessx-worker-entrypoint
