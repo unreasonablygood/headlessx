@@ -1,14 +1,13 @@
 # HeadlessX v2.x — fleet-minimal flattened compose for Coolify.
 # Lives at the REPO ROOT (docker_compose_location: /docker-compose.fleet.yml) so
 # build `context: .` resolves to the repo root under Coolify's --project-directory.
-# (A compose under infra/docker/ with `context: ../../` broke: ../../ climbed past
-# the repo root to / under Coolify's project-directory resolution → lstat /infra.)
 #
 # Derived from infra/docker/docker-compose.yml: profiles removed (Coolify doesn't
 # pass --profile all), worker+web dropped (API-only scraping), host ports removed
 # for internal deps, container_name removed, the ../../apps/api/models bind-mount
-# dropped (models are baked into the api image via api.Dockerfile). api is the only
-# host-published service (Tailscale :38473). Secrets resolve from Coolify env rows.
+# dropped (models are baked into the api image via api.Dockerfile), explicit ipam
+# subnet (beelink address-pool exhaustion), restart: unless-stopped on all
+# services. api is the only host-published service (Tailscale :38473).
 services:
   postgres:
     image: postgres:15-alpine
@@ -40,9 +39,9 @@ services:
 
   html-to-md:
     build:
-    restart: unless-stopped
       context: .
       dockerfile: apps/go-html-to-md-service/Dockerfile
+    restart: unless-stopped
     environment:
       - PORT=8080
     healthcheck:
@@ -55,9 +54,9 @@ services:
 
   yt-engine:
     build:
-    restart: unless-stopped
       context: .
       dockerfile: infra/docker/yt-engine.Dockerfile
+    restart: unless-stopped
     environment:
       - YT_ENGINE_PORT=${YT_ENGINE_PORT:-8090}
       - YT_ENGINE_TEMP_DIR=${YT_ENGINE_TEMP_DIR:-/app/tmp/yt-engine}
@@ -74,9 +73,9 @@ services:
 
   api:
     build:
-    restart: unless-stopped
       context: .
       dockerfile: infra/docker/api.Dockerfile
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -131,14 +130,11 @@ services:
 volumes:
   pgdata:
   browser_profile:
-    restart: unless-stopped
   yt_engine_tmp:
 
-    restart: unless-stopped
 networks:
   headlessx-network:
     driver: bridge
-    restart: unless-stopped
     ipam:
       driver: default
       config:
