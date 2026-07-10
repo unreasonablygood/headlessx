@@ -10,7 +10,7 @@ Adoption tracked in `pi-config-4qq`; audit/corrected-basis in `pi-config-b7w`.
 |---|---|
 | Repo | `unreasonablygood/headlessx` (fork of `saifyxpro/HeadlessX`; `upstream/main` tracked) |
 | Branch | `main` |
-| Compose | `/infra/docker/docker-compose.fleet.yml` (flattened — no profiles; 5 services) |
+| Compose | `/docker-compose.fleet.yml` (repo root; flattened — no profiles; 5 services) |
 | build_pack | `dockercompose` |
 | Coolify app uuid | `<TBD — created in Phase 1>` |
 | Project | `coolify` |

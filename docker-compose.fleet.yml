@@ -1,14 +1,14 @@
 # HeadlessX v2.x — fleet-minimal flattened compose for Coolify.
-# Derived from infra/docker/docker-compose.yml with: profiles removed (Coolify
-# does not pass --profile all → empty deploy), worker+web dropped (API-only
-# scraping; sync scrape needs no BullMQ worker), host ports removed for internal
-# deps (compose network only; reduces beelink attack surface), container_name
-# removed (Coolify rewrites anyway; avoids collisions), and the
-# ../../apps/api/models bind mount dropped (no repo checkout on the Coolify host —
-# CAPTCHA models won't load, but basic html-js scrape works; same-day scope).
-# api is the only host-published service (Tailscale :38473).
-# Secrets (POSTGRES_PASSWORD, CREDENTIAL_ENCRYPTION_KEY, DASHBOARD_INTERNAL_API_KEY)
-# resolve from Coolify env rows (minted value-blind via secret-bootstrap).
+# Lives at the REPO ROOT (docker_compose_location: /docker-compose.fleet.yml) so
+# build `context: .` resolves to the repo root under Coolify's --project-directory.
+# (A compose under infra/docker/ with `context: ../../` broke: ../../ climbed past
+# the repo root to / under Coolify's project-directory resolution → lstat /infra.)
+#
+# Derived from infra/docker/docker-compose.yml: profiles removed (Coolify doesn't
+# pass --profile all), worker+web dropped (API-only scraping), host ports removed
+# for internal deps, container_name removed, the ../../apps/api/models bind-mount
+# dropped (models are baked into the api image via api.Dockerfile). api is the only
+# host-published service (Tailscale :38473). Secrets resolve from Coolify env rows.
 services:
   postgres:
     image: postgres:15-alpine
@@ -38,7 +38,7 @@ services:
 
   html-to-md:
     build:
-      context: ../../
+      context: .
       dockerfile: apps/go-html-to-md-service/Dockerfile
     environment:
       - PORT=8080
@@ -52,7 +52,7 @@ services:
 
   yt-engine:
     build:
-      context: ../../
+      context: .
       dockerfile: infra/docker/yt-engine.Dockerfile
     environment:
       - YT_ENGINE_PORT=${YT_ENGINE_PORT:-8090}
@@ -70,7 +70,7 @@ services:
 
   api:
     build:
-      context: ../../
+      context: .
       dockerfile: infra/docker/api.Dockerfile
     depends_on:
       postgres:
