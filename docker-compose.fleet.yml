@@ -12,6 +12,7 @@
 services:
   postgres:
     image: postgres:15-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -28,6 +29,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -38,6 +40,7 @@ services:
 
   html-to-md:
     build:
+    restart: unless-stopped
       context: .
       dockerfile: apps/go-html-to-md-service/Dockerfile
     environment:
@@ -52,6 +55,7 @@ services:
 
   yt-engine:
     build:
+    restart: unless-stopped
       context: .
       dockerfile: infra/docker/yt-engine.Dockerfile
     environment:
@@ -70,6 +74,7 @@ services:
 
   api:
     build:
+    restart: unless-stopped
       context: .
       dockerfile: infra/docker/api.Dockerfile
     depends_on:
@@ -126,11 +131,14 @@ services:
 volumes:
   pgdata:
   browser_profile:
+    restart: unless-stopped
   yt_engine_tmp:
 
+    restart: unless-stopped
 networks:
   headlessx-network:
     driver: bridge
+    restart: unless-stopped
     ipam:
       driver: default
       config:
