@@ -19,7 +19,7 @@ services:
       dockerfile: infra/docker/api.Dockerfile
     working_dir: /app/apps/api
     command: ['node', '/app/infra/docker/headfox-server.mjs']
-    restart: unless-stopped
+    restart: "no"
     network_mode: host
     environment:
       - HEADFOX_PORT=${HEADFOX_PORT:-9334}
