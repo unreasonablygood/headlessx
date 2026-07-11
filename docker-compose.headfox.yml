@@ -34,15 +34,11 @@ services:
     volumes:
       - headfox_profile:/app/.headfox/profile
     networks:
-      - headfox-network
+      - coolify
 
 volumes:
   headfox_profile:
 
 networks:
-  headfox-network:
-    driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 10.99.1.0/24
+  coolify:
+    external: true
