@@ -47,6 +47,46 @@ row; harvest lifts the value into 1Password). **Redeploy after env writes**
 - Wrapper: `pi-config/skills/headlessx/` (`headlessx render/html/content/screenshot`).
 - Health: `GET /api/health` → `{status:'online', browser:'Headfox JS (Camoufox-powered Firefox)'}` (NO `browserConnected` in v2).
 
+## headfox-server (`browser remote` backend)
+
+A **separate Coolify app** (`r5iur7qq2m7xdg1pervg6g4d`, `docker-compose.headfox.yml`)
+running a **persistent Camoufox Playwright server** (`firefox.launchServer`) so
+pi's `browser` skill can drive the remote anti-detection browser for *interactive*
+flows (the scrape API above is for one-shot scraping). Distinct from the v2 scrape
+stack — does not touch it.
+
+- **Launcher** (`infra/docker/headfox-server.mjs`): `firefox.launchServer({
+  wsPath: '/' + HEADFOX_WS_PATH, host: HEADFOX_BIND (def the tailnet IP),
+  ...camoufoxOptions })`. Validates the token (≥16 chars, trims quotes). Never
+  logs the wsEndpoint (it carries the secret token).
+- **Compose**: `network_mode: host` (workaround for the beelink's docker
+  network-pool exhaustion — see [pi-config-1d2](http://bv:2026/pi-config-1d2);
+  bridge creation fails "all predefined address pools fully subnetted"). TCP
+  healthcheck on the server port → Coolify `running:healthy`. `restart: unless-stopped`.
+- **playwright-core pin**: `1.61.0-alpha-1781023400000` (apps/api/package.json) —
+  must EXACTLY match the mac's `@playwright/cli` version or `connect` fails (428
+  version mismatch). headfox-js declares playwright-core as a peer (>=1.53), so the
+  bump changes the shared version the server uses.
+- **Client** (pi-config `skills/browser/browser.ts`): `browser remote` resolves
+  the token via opd (`op://m3_local/HEADFOX_WS_PATH/credential`), writes
+  `ws://<HEADFOX_HOST>/<token>` to a **0600 temp config** (`browser.remoteEndpoint`
+  + `viewport:null` — Camoufox rejects `setDefaultViewport`), runs
+  `playwright-cli open --config <temp>`, deletes the temp. The daemon reads
+  `remoteEndpoint` from the config (into memory) — **never on argv** (persistent
+  daemon argv endpoint count: 0). Subsequent `goto`/`snapshot`/`click` forward to
+  playwright-cli (same session) → drive the remote.
+- **Secret**: `HEADFOX_WS_PATH` (the ws_path token) minted value-blind to Coolify
+  env + 1Password (`op://m3_local/HEADFOX_WS_PATH/credential`) via
+  `secret-bootstrap generate` + `harvest`. Auth = Tailscale-only (tailnet bind)
+  + the token (Playwright validates the path).
+- **Known issue — mint quoting**: `secret-bootstrap` sometimes stored the token
+  with surrounding single quotes; the client + launcher strip them defensively
+  (`.replace(/^["']+|["']+$/g, '').trim()`). Root-cause in secret-bootstrap is a
+  separate follow-up.
+- **Follow-up**: migrate host networking → an isolated bridge network once
+  [pi-config-1d2](http://bv:2026/pi-config-1d2) (the pool fix) lands — see
+  [pi-config-bcq](http://bv:2026/pi-config-bcq) (child, blocked on 1d2).
+
 ## Upstream sync
 
 `gh repo sync unreasonablygood/headlessx` (parent `saifyxpro/HeadlessX`).
