@@ -20,6 +20,7 @@ services:
     working_dir: /app/apps/api
     command: ['node', '/app/infra/docker/headfox-server.mjs']
     restart: unless-stopped
+    network_mode: host
     environment:
       - HEADFOX_PORT=${HEADFOX_PORT:-9334}
       - HEADFOX_WS_PATH=${HEADFOX_WS_PATH}
@@ -29,16 +30,8 @@ services:
       - HEADFOX_BLOCK_IMAGES=${HEADFOX_BLOCK_IMAGES:-false}
       - HEADFOX_ENABLE_CACHE=${HEADFOX_ENABLE_CACHE:-true}
       - HEADFOX_HEADLESS=${HEADFOX_HEADLESS:-true}
-    ports:
-      - '${HEADFOX_HOST_PORT:-38474}:${HEADFOX_PORT:-9334}'
     volumes:
       - headfox_profile:/app/.headfox/profile
-    networks:
-      - coolify
 
 volumes:
   headfox_profile:
-
-networks:
-  coolify:
-    external: true
