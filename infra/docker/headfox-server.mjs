@@ -36,16 +36,26 @@ const wsPath = '/' + wsToken
 const bool = (v, d) => (v === undefined ? d : v === 'true')
 const num = (v, d) => (v === undefined ? d : Number(v))
 
-const server = await launchServer({
-	port,
-	ws_path: wsPath,
-	headless: process.env.HEADFOX_HEADLESS !== 'false', // default true
-	humanize: num(process.env.HEADFOX_HUMANIZE, 0),
-	geoip: bool(process.env.HEADFOX_GEOIP, false),
-	block_webrtc: bool(process.env.HEADFOX_BLOCK_WEBRTC, true),
-	block_images: bool(process.env.HEADFOX_BLOCK_IMAGES, false),
-	enable_cache: bool(process.env.HEADFOX_ENABLE_CACHE, true),
-})
+let server
+try {
+	server = await launchServer({
+		port,
+		ws_path: wsPath,
+		headless: process.env.HEADFOX_HEADLESS !== 'false', // default true
+		humanize: num(process.env.HEADFOX_HUMANIZE, 0),
+		geoip: bool(process.env.HEADFOX_GEOIP, false),
+		block_webrtc: bool(process.env.HEADFOX_BLOCK_WEBRTC, true),
+		block_images: bool(process.env.HEADFOX_BLOCK_IMAGES, false),
+		enable_cache: bool(process.env.HEADFOX_ENABLE_CACHE, true),
+	})
+} catch (err) {
+	console.error(
+		'headfox-server: launchServer FAILED:',
+		err?.stack || err?.message || String(err),
+	)
+	// keep the container alive so logs are retrievable for diagnosis
+	await new Promise(() => {})
+}
 
 // Do NOT log the wsEndpoint (it carries the secret ws_path token). The browser
 // skill resolves the full wsEndpoint via opd (op://m3_local/HEADFOX_ENDPOINT).
