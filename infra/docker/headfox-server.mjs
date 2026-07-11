@@ -22,7 +22,8 @@
 // caught and the container stays alive for log capture (debug; remove keep-alive
 // once stable).
 try {
-	const { launchServer } = await import('headfox-js')
+	const { firefox } = await import('playwright-core')
+	const { launchOptions } = await import('headfox-js')
 	const port = Number(process.env.HEADFOX_PORT ?? 9334)
 	const wsToken = process.env.HEADFOX_WS_PATH
 	if (!wsToken) throw new Error('HEADFOX_WS_PATH must be set (the secret ws_path token).')
@@ -32,9 +33,10 @@ try {
 	const bool = (v, d) => (v === undefined ? d : v === 'true')
 	const num = (v, d) => (v === undefined ? d : Number(v))
 
-	const server = await launchServer({
-		port,
-		ws_path: wsPath,
+	// headfox-js's launchHeadfoxServer wrapper doesn't pass `host`; playwright's
+	// launchServer defaults to 127.0.0.1 (not reachable over Tailscale). Call
+	// firefox.launchServer directly with host: '0.0.0.0' + the Camoufox options.
+	const opts = await launchOptions({
 		headless: process.env.HEADFOX_HEADLESS !== 'false', // default true
 		humanize: num(process.env.HEADFOX_HUMANIZE, 0),
 		geoip: bool(process.env.HEADFOX_GEOIP, false),
@@ -42,6 +44,7 @@ try {
 		block_images: bool(process.env.HEADFOX_BLOCK_IMAGES, false),
 		enable_cache: bool(process.env.HEADFOX_ENABLE_CACHE, true),
 	})
+	const server = await firefox.launchServer({ ...opts, port, wsPath, host: '0.0.0.0' })
 
 	// Do NOT log the wsEndpoint (it carries the secret ws_path token). The browser
 	// skill constructs ws://${HEADFOX_HOST}/${token} and resolves the token via opd.
