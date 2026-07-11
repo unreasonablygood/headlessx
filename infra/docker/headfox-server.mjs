@@ -22,13 +22,16 @@
 import { launchServer } from 'headfox-js'
 
 const port = Number(process.env.HEADFOX_PORT ?? 9334)
-const wsPath = process.env.HEADFOX_WS_PATH
-if (!wsPath || !wsPath.startsWith('/')) {
+const wsToken = process.env.HEADFOX_WS_PATH
+if (!wsToken) {
 	console.error(
-		'headfox-server: HEADFOX_WS_PATH must be set and start with "/" (the secret token).',
+		'headfox-server: HEADFOX_WS_PATH must be set (the secret ws_path token).',
 	)
 	process.exit(2)
 }
+// Playwright launchServer requires ws_path start with "/". The token is minted
+// without one (secret-bootstrap), so prepend it here.
+const wsPath = '/' + wsToken
 
 const bool = (v, d) => (v === undefined ? d : v === 'true')
 const num = (v, d) => (v === undefined ? d : Number(v))
