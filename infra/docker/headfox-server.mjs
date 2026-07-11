@@ -41,7 +41,8 @@ try {
 
 	// headfox-js's launchHeadfoxServer wrapper doesn't pass `host`; playwright's
 	// launchServer defaults to 127.0.0.1 (not reachable over Tailscale). Call
-	// firefox.launchServer directly with host: '0.0.0.0' + the Camoufox options.
+	// firefox.launchServer directly + bind the tailnet IP (not 0.0.0.0) so the port
+	// is reachable on the tailnet but not LAN/localhost.
 	const opts = await launchOptions({
 		headless: process.env.HEADFOX_HEADLESS !== 'false', // default true
 		humanize: num(process.env.HEADFOX_HUMANIZE, 0),
@@ -56,7 +57,7 @@ try {
 		wsPath,
 		// Bind the Tailscale interface only (not 0.0.0.0) so the port isn't reachable
 		// on LAN/localhost; override via HEADFOX_BIND if the tailnet IP changes.
-		host: process.env.HEADFOX_BIND ?? '100.83.166.127',
+		host: process.env.HEADFOX_BIND?.trim() || '100.83.166.127',
 	})
 
 	// Do NOT log the wsEndpoint (it carries the secret ws_path token). The browser
