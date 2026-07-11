@@ -51,7 +51,7 @@
     "ioredis": "5.9.3",
     "jsdom": "^28.1.0",
     "onnxruntime-web": "^1.24.2",
-    "playwright-core": "^1.58.2",
+    "playwright-core": "1.61.0-alpha-1781023400000",
     "prisma": "^7.4.1",
     "proxy-chain": "^2.7.1",
     "sharp": "^0.34.5",
