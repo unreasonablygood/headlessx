@@ -25,10 +25,16 @@ try {
 	const { firefox } = await import('playwright-core')
 	const { launchOptions } = await import('headfox-js')
 	const port = Number(process.env.HEADFOX_PORT ?? 9334)
-	const wsToken = process.env.HEADFOX_WS_PATH
-	if (!wsToken) throw new Error('HEADFOX_WS_PATH must be set (the secret ws_path token).')
+	const wsToken = (process.env.HEADFOX_WS_PATH || '')
+		.replace(/^["']+|["']+$/g, '')
+		.trim()
+	if (!wsToken || wsToken.length < 16)
+		throw new Error(
+			'HEADFOX_WS_PATH must be set (>=16 chars, the secret ws_path token).',
+		)
 	// Playwright launchServer requires ws_path start with '/'. The token is minted
-	// without one (secret-bootstrap), so prepend it here.
+	// without one (secret-bootstrap), so prepend it here. Quote/trim normalize
+	// matches the browser skill's client side (mint sometimes wraps the value).
 	const wsPath = '/' + wsToken
 	const bool = (v, d) => (v === undefined ? d : v === 'true')
 	const num = (v, d) => (v === undefined ? d : Number(v))
@@ -44,7 +50,14 @@ try {
 		block_images: bool(process.env.HEADFOX_BLOCK_IMAGES, false),
 		enable_cache: bool(process.env.HEADFOX_ENABLE_CACHE, true),
 	})
-	const server = await firefox.launchServer({ ...opts, port, wsPath, host: '0.0.0.0' })
+	const server = await firefox.launchServer({
+		...opts,
+		port,
+		wsPath,
+		// Bind the Tailscale interface only (not 0.0.0.0) so the port isn't reachable
+		// on LAN/localhost; override via HEADFOX_BIND if the tailnet IP changes.
+		host: process.env.HEADFOX_BIND ?? '100.83.166.127',
+	})
 
 	// Do NOT log the wsEndpoint (it carries the secret ws_path token). The browser
 	// skill constructs ws://${HEADFOX_HOST}/${token} and resolves the token via opd.

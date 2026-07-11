@@ -1,17 +1,21 @@
 # docker-compose.headfox.yml — dedicated compose for the headfox-js Camoufox server.
 #
 # Deployed as a SEPARATE Coolify app so it does NOT touch the running headlessx-v2
-# scrape stack (postgres/redis/api/...). `browser remote` (pi-config browser skill)
-# attaches to this server's wsEndpoint via `playwright-cli attach`, driving the
-# remote anti-detection Camoufox for interactive flows.
+# scrape stack. `browser remote` (pi-config browser skill) attaches to this server's
+# wsEndpoint via `playwright-cli attach`, driving the remote anti-detection Camoufox
+# for interactive flows.
 #
-# The wsEndpoint secret (ws://<tailscale-ip>:<HEADFOX_HOST_PORT>/<HEADFOX_WS_PATH>)
-# is minted to 1Password as op://m3_local/HEADFOX_ENDPOINT/credential and resolved
-# value-blind by the browser skill. Auth boundary = Tailscale (port only reachable
-# on the tailnet) + the secret ws_path token.
+# The ws_path TOKEN (HEADFOX_WS_PATH) is the secret — minted to 1Password as
+# op://m3_local/HEADFOX_WS_PATH/credential + injected via Coolify env, resolved
+# value-blind by the browser skill. The browser skill constructs
+# ws://<HEADFOX_HOST>/<token>; the launcher prepends '/' for the ws_path.
+# Auth = Tailscale-only (the server binds the tailnet IP, not 0.0.0.0) + the
+# secret ws_path token (Playwright validates the path).
 #
-# Dedicated ipam subnet (10.99.1.0/24) to avoid the beelink's docker network-pool
-# exhaustion (documented in docs/runbooks/headlessx-throughput.md).
+# network_mode: host (not a bridge subnet) — the beelink's docker address pools
+# are fully subnetted (fleet-wide network-pool exhaustion, pi-config-1d2), so
+# creating a bridge network fails. Host networking avoids that; the port
+# (HEADFOX_PORT, def 9334) is on the host directly (Tailscale 100.83.166.127:9334).
 services:
   headfox-server:
     build:
