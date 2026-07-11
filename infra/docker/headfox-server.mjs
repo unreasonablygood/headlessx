@@ -8,37 +8,31 @@
  * (the headlessx SCRAPE api stays the tool for one-shot bulk scraping).
  *
  * Reuses headfox-js's launchServer (firefox.launchServer + Camoufox anti-detection
- * options: canvas/WebGL/audio spoofing, humanize, geoip, webrtc blocking).
- * Options are env-driven. The ws_path is the secret token; the auth boundary is
- * Tailscale (the port is only reachable on the tailnet) — value-blind: the path
- * is never logged.
+ * options). Options are env-driven. The ws_path is the secret token; the auth
+ * boundary is Tailscale (the port is only reachable on the tailnet) — value-blind:
+ * the path is never logged.
  *
- * Run:  node /app/infra/docker/headfox-server.mjs
- * Env:  HEADFOX_PORT (def 9334), HEADFOX_WS_PATH (required, secret token, starts /),
+ * Run:  node /app/infra/docker/headfox-server.mjs   (working_dir: /app/apps/api)
+ * Env:  HEADFOX_PORT (def 9334), HEADFOX_WS_PATH (required, secret token),
  *       HEADFOX_HEADLESS (def true), HEADFOX_HUMANIZE (def 0),
  *       HEADFOX_GEOIP (def false), HEADFOX_BLOCK_WEBRTC (def true),
  *       HEADFOX_BLOCK_IMAGES (def false), HEADFOX_ENABLE_CACHE (def true)
  */
-import { launchServer } from 'headfox-js'
-
-const port = Number(process.env.HEADFOX_PORT ?? 9334)
-const wsToken = process.env.HEADFOX_WS_PATH
-if (!wsToken) {
-	console.error(
-		'headfox-server: HEADFOX_WS_PATH must be set (the secret ws_path token).',
-	)
-	process.exit(2)
-}
-// Playwright launchServer requires ws_path start with "/". The token is minted
-// without one (secret-bootstrap), so prepend it here.
-const wsPath = '/' + wsToken
-
-const bool = (v, d) => (v === undefined ? d : v === 'true')
-const num = (v, d) => (v === undefined ? d : Number(v))
-
-let server
+// Dynamic import + full try/catch so ANY failure (incl. module resolution) is
+// caught and the container stays alive for log capture (debug; remove keep-alive
+// once stable).
 try {
-	server = await launchServer({
+	const { launchServer } = await import('headfox-js')
+	const port = Number(process.env.HEADFOX_PORT ?? 9334)
+	const wsToken = process.env.HEADFOX_WS_PATH
+	if (!wsToken) throw new Error('HEADFOX_WS_PATH must be set (the secret ws_path token).')
+	// Playwright launchServer requires ws_path start with '/'. The token is minted
+	// without one (secret-bootstrap), so prepend it here.
+	const wsPath = '/' + wsToken
+	const bool = (v, d) => (v === undefined ? d : v === 'true')
+	const num = (v, d) => (v === undefined ? d : Number(v))
+
+	const server = await launchServer({
 		port,
 		ws_path: wsPath,
 		headless: process.env.HEADFOX_HEADLESS !== 'false', // default true
@@ -48,31 +42,21 @@ try {
 		block_images: bool(process.env.HEADFOX_BLOCK_IMAGES, false),
 		enable_cache: bool(process.env.HEADFOX_ENABLE_CACHE, true),
 	})
-} catch (err) {
-	console.error(
-		'headfox-server: launchServer FAILED:',
-		err?.stack || err?.message || String(err),
-	)
-	// keep the container alive so logs are retrievable for diagnosis
-	await new Promise(() => {})
-}
 
-// Do NOT log the wsEndpoint (it carries the secret ws_path token). The browser
-// skill resolves the full wsEndpoint via opd (op://m3_local/HEADFOX_ENDPOINT).
-console.log(`headfox server listening on port ${port} (ws_path configured).`)
-console.log('Connect via: `browser remote` (pi-config browser skill).')
+	// Do NOT log the wsEndpoint (it carries the secret ws_path token). The browser
+	// skill constructs ws://${HEADFOX_HOST}/${token} and resolves the token via opd.
+	console.log(`headfox server listening on port ${port} (ws_path configured).`)
+	console.log('Connect via: `browser remote` (pi-config browser skill).')
 
-const shutdown = async (sig) => {
-	console.log(`headfox-server: ${sig} received, closing.`)
-	try {
-		await server.close()
-	} catch {
-		/* best-effort */
+	const shutdown = async (sig) => {
+		console.log(`headfox-server: ${sig} received, closing.`)
+		try { await server.close() } catch { /* best-effort */ }
+		process.exit(0)
 	}
-	process.exit(0)
+	process.on('SIGINT', () => shutdown('SIGINT'))
+	process.on('SIGTERM', () => shutdown('SIGTERM'))
+	await new Promise(() => {}) // keep alive
+} catch (err) {
+	console.error('headfox-server FATAL:', err?.stack || err?.message || String(err))
+	await new Promise(() => {}) // keep alive so logs are retrievable for diagnosis
 }
-process.on('SIGINT', () => shutdown('SIGINT'))
-process.on('SIGTERM', () => shutdown('SIGTERM'))
-
-// keep alive
-await new Promise(() => {})
