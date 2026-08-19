@@ -86,10 +86,15 @@ export async function launchWithHeadfox<
 	}
 
 	if (typeof userDataDir === "string") {
-		const context = await playwright.launchPersistentContext(
-			userDataDir,
-			fromOptions,
-		);
+		// Playwright otherwise synthesizes a default device viewport for persistent
+		// contexts. Current Headfox/Camoufox builds reject the newer `isMobile`
+		// member in that protocol payload before the first page can open. Persistent
+		// callers set their page viewport explicitly after launch, so disable the
+		// incompatible context default here.
+		const context = await playwright.launchPersistentContext(userDataDir, {
+			...fromOptions,
+			viewport: null,
+		});
 		return syncAttachVD(context, virtualDisplay);
 	}
 
