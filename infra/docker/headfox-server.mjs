@@ -22,7 +22,10 @@
 // caught and the container stays alive for log capture (debug; remove keep-alive
 // once stable).
 try {
-	const { firefox } = await import('playwright-core')
+	// Interactive clients require an exact Playwright protocol match. Keep that
+	// alpha build isolated from the local Camoufox API, whose v135 protocol emits
+	// the older page-error shape understood by the stable core.
+	const { firefox } = await import('playwright-core-remote')
 	const { launchOptions } = await import('headfox-js')
 	const port = Number(process.env.HEADFOX_PORT ?? 9334)
 	const wsToken = (process.env.HEADFOX_WS_PATH || '')
