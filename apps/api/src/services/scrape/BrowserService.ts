@@ -29,6 +29,41 @@ export interface IsolatedBrowserPage {
 }
 
 export type IsolatedEvidenceBrowserStage = 'launch' | 'context' | 'page' | 'viewport';
+type IsolatedEvidenceBrowserCause =
+    | 'browser_closed'
+    | 'executable'
+    | 'fingerprint_database'
+    | 'protocol'
+    | 'proxy'
+    | 'timeout'
+    | 'unknown';
+
+function classifyIsolatedBrowserCause(error: unknown): IsolatedEvidenceBrowserCause {
+    const message = error instanceof Error
+        ? `${error.name} ${error.message}`.toLowerCase()
+        : '';
+    if (message.includes('no such table') || message.includes('sqlite')) {
+        return 'fingerprint_database';
+    }
+    if (message.includes('target closed') || message.includes('browser has been closed')) {
+        return 'browser_closed';
+    }
+    if (message.includes('protocol error')) return 'protocol';
+    if (message.includes('timeout')) return 'timeout';
+    if (message.includes('proxy')) return 'proxy';
+    if (message.includes('executable')) return 'executable';
+    return 'unknown';
+}
+
+function logIsolatedBrowserFailure(
+    stage: IsolatedEvidenceBrowserStage,
+    error: unknown,
+): void {
+    console.warn('isolated evidence browser stage failed', {
+        stage,
+        cause: classifyIsolatedBrowserCause(error),
+    });
+}
 
 export class IsolatedEvidenceBrowserError extends Error {
     public constructor(public readonly stage: IsolatedEvidenceBrowserStage) {
@@ -473,21 +508,24 @@ class BrowserService {
                     'general.platform.override': '',
                 },
             });
-        } catch {
+        } catch (error) {
+            logIsolatedBrowserFailure('launch', error);
             throw new IsolatedEvidenceBrowserError('launch');
         }
 
         let page: Page;
         try {
             page = await browser.newPage();
-        } catch {
+        } catch (error) {
+            logIsolatedBrowserFailure('page', error);
             await browser.close().catch(() => undefined);
             throw new IsolatedEvidenceBrowserError('page');
         }
 
         try {
             await page.setViewportSize(viewport);
-        } catch {
+        } catch (error) {
+            logIsolatedBrowserFailure('viewport', error);
             await browser.close().catch(() => undefined);
             throw new IsolatedEvidenceBrowserError('viewport');
         }
