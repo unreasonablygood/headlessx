@@ -377,7 +377,28 @@ export class EvidenceCaptureService {
       }
       interactions.push(successfulInteraction(1, 'navigate', navigationStarted));
       if (blocked) throw blocked;
-      response = selectMainDocumentResponse(response, latestDocumentResponse);
+
+      if (kind === 'document') {
+        const waitStarted = new Date().toISOString();
+        response = await selectMainDocumentResponse(
+          response,
+          () => latestDocumentResponse,
+          async () => {
+            await page
+              .waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 8_000) })
+              .catch(() => undefined);
+            await page.waitForTimeout(250);
+            if (blocked) throw blocked;
+            interactions.push(successfulInteraction(2, 'wait_for_document', waitStarted));
+          },
+        );
+        if ((await page.locator('input[type="password"]').count()) > 0) {
+          throw invalidTarget();
+        }
+      } else {
+        response = await selectMainDocumentResponse(response, () => latestDocumentResponse);
+      }
+
       if (!response) {
         throw new EvidenceCaptureError(
           502,
@@ -386,20 +407,6 @@ export class EvidenceCaptureService {
           'navigation',
           'the browser did not expose the main response',
         );
-      }
-
-      if (kind === 'document') {
-        const waitStarted = new Date().toISOString();
-        await page
-          .waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 8_000) })
-          .catch(() => undefined);
-        await page.waitForTimeout(250);
-        if (blocked) throw blocked;
-        response = latestDocumentResponse ?? response;
-        interactions.push(successfulInteraction(2, 'wait_for_document', waitStarted));
-        if ((await page.locator('input[type="password"]').count()) > 0) {
-          throw invalidTarget();
-        }
       }
 
       const finalUrl = await admitPublicUrl(page.url(), true);
