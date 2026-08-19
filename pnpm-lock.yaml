@@ -72,7 +72,7 @@ importers:
         version: 5.2.1
       headfox-js:
         specifier: 0.1.12
-        version: 0.1.12(playwright-core@1.61.0-alpha-1781023400000)
+        version: 0.1.12(playwright-core@1.58.2)
       https-proxy-agent:
         specifier: ^7.0.6
         version: 7.0.6
@@ -86,8 +86,11 @@ importers:
         specifier: ^1.24.2
         version: 1.24.2
       playwright-core:
-        specifier: 1.61.0-alpha-1781023400000
-        version: 1.61.0-alpha-1781023400000
+        specifier: 1.58.2
+        version: 1.58.2
+      playwright-core-remote:
+        specifier: npm:playwright-core@1.61.0-alpha-1781023400000
+        version: playwright-core@1.61.0-alpha-1781023400000
       prisma:
         specifier: ^7.4.1
         version: 7.4.1(@types/react@19.2.14)(better-sqlite3@12.6.2)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)
@@ -12445,7 +12448,7 @@ snapshots:
       ow: 0.28.2
       tslib: 2.8.1
 
-  headfox-js@0.1.12(playwright-core@1.61.0-alpha-1781023400000):
+  headfox-js@0.1.12(playwright-core@1.58.2):
     dependencies:
       adm-zip: 0.5.16
       cli-progress: 3.12.0
@@ -12455,7 +12458,7 @@ snapshots:
       impit: 0.11.0
       language-tags: 2.1.0
       maxmind: 5.0.3
-      playwright-core: 1.61.0-alpha-1781023400000
+      playwright-core: 1.58.2
       pretty-bytes: 7.1.0
       ua-parser-js: 2.0.8
       xml2js: 0.6.2

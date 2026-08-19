@@ -63,10 +63,13 @@ stack — does not touch it.
   network-pool exhaustion — see [pi-config-1d2](http://bv:2026/pi-config-1d2);
   bridge creation fails "all predefined address pools fully subnetted"). TCP
   healthcheck on the server port → Coolify `running:healthy`. `restart: unless-stopped`.
-- **playwright-core pin**: `1.61.0-alpha-1781023400000` (apps/api/package.json) —
-  must EXACTLY match the mac's `@playwright/cli` version or `connect` fails (428
-  version mismatch). headfox-js declares playwright-core as a peer (>=1.53), so the
-  bump changes the shared version the server uses.
+- **playwright-core pins**: the local v135 capture API uses stable `1.58.2`,
+  whose Firefox dispatcher accepts the browser's legacy page-error shape. The
+  separate interactive server imports the `playwright-core-remote` alias pinned
+  to `1.61.0-alpha-1781023400000`; that version must EXACTLY match the mac's
+  `@playwright/cli` or `connect` fails with a 428 version mismatch. Do not let
+  the remote alpha become headfox-js's local peer: it expects page-error
+  location fields the v135 browser does not emit and can crash the API process.
 - **Client** (pi-config `skills/browser/browser.ts`): `browser remote` resolves
   the token via opd (`op://m3_local/HEADFOX_WS_PATH/credential`), writes
   `ws://<HEADFOX_HOST>/<token>` to a **0600 temp config** (`browser.remoteEndpoint`
