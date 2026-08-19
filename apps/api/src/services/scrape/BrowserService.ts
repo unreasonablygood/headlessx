@@ -515,7 +515,16 @@ class BrowserService {
 
         let page: Page;
         try {
-            page = await browser.newPage();
+            // Headfox 135 rejects Playwright's synthesized device payload on
+            // Linux when it contains the newer `isMobile` member. The package's
+            // persistent-context launcher already avoids that incompatibility
+            // with `viewport: null`; apply the same supported context option to
+            // the browser-level fresh-page path, then size the page explicitly.
+            page = await browser.newPage({
+                acceptDownloads: false,
+                serviceWorkers: 'block',
+                viewport: null,
+            });
         } catch (error) {
             logIsolatedBrowserFailure('page', error);
             await browser.close().catch(() => undefined);
