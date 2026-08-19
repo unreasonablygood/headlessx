@@ -9,9 +9,10 @@ import type {
 } from 'playwright-core';
 import {
   browserService,
-  IsolatedEvidenceBrowserError,
   type IsolatedBrowserPage,
+  IsolatedEvidenceBrowserError,
 } from './BrowserService';
+import { selectMainDocumentResponse } from './EvidenceNavigation';
 
 const SCHEMA_VERSION = 'fleet.headlessx-evidence/v1';
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
@@ -376,6 +377,7 @@ export class EvidenceCaptureService {
       }
       interactions.push(successfulInteraction(1, 'navigate', navigationStarted));
       if (blocked) throw blocked;
+      response = selectMainDocumentResponse(response, latestDocumentResponse);
       if (!response) {
         throw new EvidenceCaptureError(
           502,
