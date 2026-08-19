@@ -12,7 +12,12 @@ export interface RenderedDocumentFallback {
   contentType: string;
 }
 
-export type EvidenceCaptureStep = 'navigation_timing' | 'dom_source';
+export type EvidenceCaptureStep =
+  | 'navigation_timing'
+  | 'dom_source'
+  | 'screenshot'
+  | 'links'
+  | 'metadata';
 
 export class EvidenceCaptureStepError extends Error {
   public constructor(public readonly step: EvidenceCaptureStep) {

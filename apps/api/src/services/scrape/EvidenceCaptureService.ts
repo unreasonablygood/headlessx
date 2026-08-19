@@ -474,14 +474,16 @@ export class EvidenceCaptureService {
           );
         }
         const domStarted = new Date().toISOString();
-        html = capturedDomHtml ?? (await page.content());
+        html = capturedDomHtml ?? (await captureEvidenceStep('dom_source', () => page.content()));
         markdown = await page
           .locator('body')
           .innerText()
           .catch(() => '');
         interactions.push(successfulInteraction(4, 'capture_dom', domStarted));
         const screenshotStarted = new Date().toISOString();
-        const screenshotBytes = await page.screenshot({ fullPage: false, type: 'png' });
+        const screenshotBytes = await captureEvidenceStep('screenshot', () =>
+          page.screenshot({ fullPage: false, type: 'png' }),
+        );
         interactions.push(successfulInteraction(5, 'capture_screenshot', screenshotStarted));
         enforceAggregateSize(
           maxBytes,
@@ -497,21 +499,25 @@ export class EvidenceCaptureService {
           sha256: sha256(screenshotBytes),
           byteLength: screenshotBytes.length,
         };
-        links = await page
-          .locator('a[href]')
-          .evaluateAll((anchors) =>
-            Array.from(
-              new Set(
-                anchors
-                  .map((anchor) => (anchor as HTMLAnchorElement).href)
-                  .filter((url) => url.startsWith('http://') || url.startsWith('https://')),
-              ),
-            ).slice(0, MAX_LINKS),
-          );
-        metadata = await page.evaluate(() => ({
-          language: document.documentElement.lang || null,
-          title: document.title,
-        }));
+        links = await captureEvidenceStep('links', () =>
+          page
+            .locator('a[href]')
+            .evaluateAll((anchors) =>
+              Array.from(
+                new Set(
+                  anchors
+                    .map((anchor) => (anchor as HTMLAnchorElement).href)
+                    .filter((url) => url.startsWith('http://') || url.startsWith('https://')),
+                ),
+              ).slice(0, MAX_LINKS),
+            ),
+        );
+        metadata = await captureEvidenceStep('metadata', () =>
+          page.evaluate(() => ({
+            language: document.documentElement.lang || null,
+            title: document.title,
+          })),
+        );
         metadata.navigationResponseSource = navigationResponseSource;
       }
 
