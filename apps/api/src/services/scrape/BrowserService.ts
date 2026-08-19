@@ -28,7 +28,42 @@ export interface IsolatedBrowserPage {
     viewport: ViewportSize;
 }
 
-export type IsolatedEvidenceBrowserStage = 'launch' | 'context' | 'page';
+export type IsolatedEvidenceBrowserStage = 'launch' | 'context' | 'page' | 'viewport';
+type IsolatedEvidenceBrowserCause =
+    | 'browser_closed'
+    | 'executable'
+    | 'fingerprint_database'
+    | 'protocol'
+    | 'proxy'
+    | 'timeout'
+    | 'unknown';
+
+function classifyIsolatedBrowserCause(error: unknown): IsolatedEvidenceBrowserCause {
+    const message = error instanceof Error
+        ? `${error.name} ${error.message}`.toLowerCase()
+        : '';
+    if (message.includes('no such table') || message.includes('sqlite')) {
+        return 'fingerprint_database';
+    }
+    if (message.includes('target closed') || message.includes('browser has been closed')) {
+        return 'browser_closed';
+    }
+    if (message.includes('protocol error')) return 'protocol';
+    if (message.includes('timeout')) return 'timeout';
+    if (message.includes('proxy')) return 'proxy';
+    if (message.includes('executable')) return 'executable';
+    return 'unknown';
+}
+
+function logIsolatedBrowserFailure(
+    stage: IsolatedEvidenceBrowserStage,
+    error: unknown,
+): void {
+    console.warn('isolated evidence browser stage failed', {
+        stage,
+        cause: classifyIsolatedBrowserCause(error),
+    });
+}
 
 export class IsolatedEvidenceBrowserError extends Error {
     public constructor(public readonly stage: IsolatedEvidenceBrowserStage) {
@@ -473,23 +508,43 @@ class BrowserService {
                     'general.platform.override': '',
                 },
             });
-        } catch {
+        } catch (error) {
+            logIsolatedBrowserFailure('launch', error);
             throw new IsolatedEvidenceBrowserError('launch');
         }
 
+        let page: Page;
         try {
-            const page = await browser.newPage();
-            const context = page.context();
-            await page.setViewportSize(viewport);
-            page.on('download', (download) => {
-                void download.cancel().catch(() => undefined);
+            // Headfox 135 rejects Playwright's synthesized device payload on
+            // Linux when it contains the newer `isMobile` member. The package's
+            // persistent-context launcher already avoids that incompatibility
+            // with `viewport: null`; apply the same supported context option to
+            // the browser-level fresh-page path, then size the page explicitly.
+            page = await browser.newPage({
+                acceptDownloads: false,
+                serviceWorkers: 'block',
+                viewport: null,
             });
-            this.activePages += 1;
-            return { browser, context, page, viewport };
-        } catch {
+        } catch (error) {
+            logIsolatedBrowserFailure('page', error);
             await browser.close().catch(() => undefined);
             throw new IsolatedEvidenceBrowserError('page');
         }
+
+        try {
+            await page.setViewportSize(viewport);
+        } catch (error) {
+            logIsolatedBrowserFailure('viewport', error);
+            await browser.close().catch(() => undefined);
+            throw new IsolatedEvidenceBrowserError('viewport');
+        }
+
+        const context = page.context();
+        page.on('download', (download) => {
+            void download.cancel().catch(() => undefined);
+        });
+        this.activePages += 1;
+        return { browser, context, page, viewport };
     }
 
     public async releaseIsolatedEvidencePage(capture: IsolatedBrowserPage): Promise<void> {
