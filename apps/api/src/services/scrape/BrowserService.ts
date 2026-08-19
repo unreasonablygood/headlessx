@@ -466,6 +466,12 @@ class BrowserService {
                 os: 'windows',
                 humanize: config.camoufoxHumanize ?? 2.5,
                 block_webrtc: config.camoufoxBlockWebrtc ?? true,
+                // The evidence image intentionally ships without the optional
+                // WebGL fingerprint database. Make the already-observed
+                // disabled fallback explicit so a fresh profile cannot fail
+                // while probing unavailable SQLite sampling data.
+                block_webgl: true,
+                i_know_what_im_doing: true,
                 block_images: config.camoufoxBlockImages ?? false,
                 enable_cache: false,
                 window: [viewport.width, viewport.height],
