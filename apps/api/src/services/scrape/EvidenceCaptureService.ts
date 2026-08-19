@@ -14,6 +14,7 @@ import {
 } from './BrowserService';
 import {
   captureEvidenceStep,
+  collectBoundedPublicLinks,
   EvidenceCaptureStepError,
   selectMainDocumentResponse,
   validateRenderedDocumentFallback,
@@ -500,17 +501,7 @@ export class EvidenceCaptureService {
           byteLength: screenshotBytes.length,
         };
         links = await captureEvidenceStep('links', () =>
-          page
-            .locator('a[href]')
-            .evaluateAll((anchors) =>
-              Array.from(
-                new Set(
-                  anchors
-                    .map((anchor) => (anchor as HTMLAnchorElement).href)
-                    .filter((url) => url.startsWith('http://') || url.startsWith('https://')),
-                ),
-              ).slice(0, MAX_LINKS),
-            ),
+          page.evaluate(collectBoundedPublicLinks, MAX_LINKS),
         );
         metadata = await captureEvidenceStep('metadata', () =>
           page.evaluate(() => ({

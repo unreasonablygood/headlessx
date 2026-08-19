@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 
 import {
   captureEvidenceStep,
+  collectBoundedPublicLinks,
   EvidenceCaptureStepError,
   selectMainDocumentResponse,
   validateRenderedDocumentFallback,
@@ -55,5 +56,34 @@ test('labels every bounded browser capture operation without preserving its unsa
 
     await expect(failure).rejects.toEqual(new EvidenceCaptureStepError(step));
     await expect(failure).rejects.not.toHaveProperty('message', 'unsafe browser detail');
+  }
+});
+
+test('collects public links with browser-side deduplication and a hard result cap', () => {
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      querySelectorAll: () => [
+        { href: 'https://example.com/one' },
+        { href: 'mailto:private@example.com' },
+        { href: 'https://example.com/one' },
+        { href: 'http://example.com/two' },
+        { href: 'https://example.com/three' },
+      ],
+    },
+  });
+
+  try {
+    expect(collectBoundedPublicLinks(2)).toEqual([
+      'https://example.com/one',
+      'http://example.com/two',
+    ]);
+  } finally {
+    if (originalDocument) {
+      Object.defineProperty(globalThis, 'document', originalDocument);
+    } else {
+      Reflect.deleteProperty(globalThis, 'document');
+    }
   }
 });
