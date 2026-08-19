@@ -332,9 +332,9 @@ export class EvidenceCaptureService {
     let browserDeadline: NodeJS.Timeout | undefined;
     try {
       capture = await browserService.getIsolatedEvidencePage();
-      const { browser, page, viewport } = capture;
+      const { browserVersion, context, page, viewport } = capture;
       browserDeadline = setTimeout(() => {
-        void browser.close().catch(() => undefined);
+        void context.close().catch(() => undefined);
       }, timeoutMs);
       page.setDefaultTimeout(timeoutMs);
       page.setDefaultNavigationTimeout(timeoutMs);
@@ -498,7 +498,7 @@ export class EvidenceCaptureService {
         metadata,
         browser: {
           name: 'headfox',
-          version: browser.version(),
+          version: browserVersion,
           viewportWidth: viewport.width,
           viewportHeight: viewport.height,
           javascriptEnabled: true,
