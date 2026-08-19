@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { LookupAddress } from 'node:dns';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
@@ -12,6 +11,7 @@ import {
   type IsolatedBrowserPage,
   IsolatedEvidenceBrowserError,
 } from './BrowserService';
+import { evidenceSha256 } from './EvidenceIntegrity';
 import {
   captureEvidenceStep,
   collectBoundedPublicArtifact,
@@ -532,7 +532,7 @@ export class EvidenceCaptureService {
           mediaType: 'image/png',
           encoding: 'base64',
           data: screenshotBytes.toString('base64'),
-          sha256: sha256(screenshotBytes),
+          sha256: evidenceSha256(screenshotBytes),
           byteLength: screenshotBytes.length,
         };
         links = await captureEvidenceStep('links', () =>
@@ -563,7 +563,7 @@ export class EvidenceCaptureService {
         body: {
           encoding: 'base64',
           data: body.toString('base64'),
-          sha256: sha256(body),
+          sha256: evidenceSha256(body),
           byteLength: body.length,
         },
         html,
@@ -843,10 +843,6 @@ function mapCaptureError(error: unknown): EvidenceCaptureError {
     'render',
     'the isolated browser could not produce a verified capture',
   );
-}
-
-function sha256(value: Buffer): string {
-  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
 export const evidenceCaptureService = new EvidenceCaptureService();
