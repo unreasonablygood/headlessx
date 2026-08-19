@@ -12,6 +12,25 @@ export interface RenderedDocumentFallback {
   contentType: string;
 }
 
+export type EvidenceCaptureStep = 'navigation_timing' | 'dom_source';
+
+export class EvidenceCaptureStepError extends Error {
+  public constructor(public readonly step: EvidenceCaptureStep) {
+    super(`evidence capture step failed: ${step}`);
+  }
+}
+
+export async function captureEvidenceStep<T>(
+  step: EvidenceCaptureStep,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch {
+    throw new EvidenceCaptureStepError(step);
+  }
+}
+
 export function validateRenderedDocumentFallback(
   status: number,
   contentType: string,

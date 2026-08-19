@@ -1,6 +1,11 @@
 import { expect, test } from 'bun:test';
 
-import { selectMainDocumentResponse, validateRenderedDocumentFallback } from './EvidenceNavigation';
+import {
+  captureEvidenceStep,
+  EvidenceCaptureStepError,
+  selectMainDocumentResponse,
+  validateRenderedDocumentFallback,
+} from './EvidenceNavigation';
 
 test('waits for a delayed observed response when Headfox goto returns null', async () => {
   const observed = { status: 200 };
@@ -34,4 +39,13 @@ test('accepts an HTML navigation timing fallback with a real HTTP status', () =>
 test('rejects missing status and non-HTML navigation timing fallbacks', () => {
   expect(validateRenderedDocumentFallback(0, 'text/html')).toBeNull();
   expect(validateRenderedDocumentFallback(200, 'image/png')).toBeNull();
+});
+
+test('labels a failed browser capture operation without preserving its unsafe error', async () => {
+  const failure = captureEvidenceStep('navigation_timing', async () => {
+    throw new Error('unsafe browser detail');
+  });
+
+  await expect(failure).rejects.toEqual(new EvidenceCaptureStepError('navigation_timing'));
+  await expect(failure).rejects.not.toHaveProperty('message', 'unsafe browser detail');
 });
