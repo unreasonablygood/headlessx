@@ -7,7 +7,11 @@ import type {
   Response as BrowserResponse,
   Route,
 } from 'playwright-core';
-import { browserService, type IsolatedBrowserPage } from './BrowserService';
+import {
+  browserService,
+  IsolatedEvidenceBrowserError,
+  type IsolatedBrowserPage,
+} from './BrowserService';
 
 const SCHEMA_VERSION = 'fleet.headlessx-evidence/v1';
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
@@ -715,6 +719,15 @@ function invalidTarget(): EvidenceCaptureError {
 
 function mapCaptureError(error: unknown): EvidenceCaptureError {
   if (error instanceof EvidenceCaptureError) return error;
+  if (error instanceof IsolatedEvidenceBrowserError) {
+    return new EvidenceCaptureError(
+      502,
+      `evidence_browser_${error.stage}_failed`,
+      true,
+      `browser_${error.stage}`,
+      `the isolated browser could not complete its ${error.stage} stage`,
+    );
+  }
   const message = error instanceof Error ? error.message.toLowerCase() : '';
   if (message.includes('timeout')) {
     return new EvidenceCaptureError(

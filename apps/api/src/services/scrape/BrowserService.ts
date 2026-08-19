@@ -28,6 +28,15 @@ export interface IsolatedBrowserPage {
     viewport: ViewportSize;
 }
 
+export type IsolatedEvidenceBrowserStage = 'launch' | 'context' | 'page';
+
+export class IsolatedEvidenceBrowserError extends Error {
+    public constructor(public readonly stage: IsolatedEvidenceBrowserStage) {
+        super(`the isolated evidence browser failed during ${stage}`);
+        this.name = 'IsolatedEvidenceBrowserError';
+    }
+}
+
 type CookieReadyMarkerReason = 'stopped' | 'browser_closed' | 'existing_profile';
 
 interface CookieReadyMarker {
@@ -433,36 +442,50 @@ class BrowserService {
             ? normalizeConfiguredProxyUrl(config.proxyUrl, config.proxyProtocol)
             : undefined;
         const proxyConfig = proxyServer ? { server: proxyServer } : undefined;
-        const browser = await Headfox({
-            headless: true,
-            proxy: proxyConfig,
-            geoip: proxyConfig ? config.camoufoxGeoip : false,
-            os: 'windows',
-            humanize: config.camoufoxHumanize ?? 2.5,
-            block_webrtc: config.camoufoxBlockWebrtc ?? true,
-            block_images: config.camoufoxBlockImages ?? false,
-            enable_cache: false,
-            window: [viewport.width, viewport.height],
-            firefox_user_prefs: {
-                'privacy.resistFingerprinting': false,
-                'dom.webdriver.enabled': false,
-                useragentoverride: '',
-                'general.appversion.override': '',
-                'general.platform.override': '',
-            },
-        });
+        let browser: Browser;
         try {
-            const context = await browser.newContext({
+            browser = await Headfox({
+                headless: true,
+                proxy: proxyConfig,
+                geoip: proxyConfig ? config.camoufoxGeoip : false,
+                os: 'windows',
+                humanize: config.camoufoxHumanize ?? 2.5,
+                block_webrtc: config.camoufoxBlockWebrtc ?? true,
+                block_images: config.camoufoxBlockImages ?? false,
+                enable_cache: false,
+                window: [viewport.width, viewport.height],
+                firefox_user_prefs: {
+                    'privacy.resistFingerprinting': false,
+                    'dom.webdriver.enabled': false,
+                    useragentoverride: '',
+                    'general.appversion.override': '',
+                    'general.platform.override': '',
+                },
+            });
+        } catch {
+            throw new IsolatedEvidenceBrowserError('launch');
+        }
+
+        let context: BrowserContext;
+        try {
+            context = await browser.newContext({
                 acceptDownloads: false,
                 serviceWorkers: 'block',
                 viewport,
             });
+        } catch {
+            await browser.close().catch(() => undefined);
+            throw new IsolatedEvidenceBrowserError('context');
+        }
+
+        try {
             const page = await context.newPage();
             this.activePages += 1;
             return { browser, context, page, viewport };
-        } catch (error) {
+        } catch {
+            await context.close().catch(() => undefined);
             await browser.close().catch(() => undefined);
-            throw error;
+            throw new IsolatedEvidenceBrowserError('page');
         }
     }
 
