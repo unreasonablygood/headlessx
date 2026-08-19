@@ -92,6 +92,8 @@ Only the queue-backed website crawl flow requires Redis. The other website opera
 | `POST` | `/api/operators/website/scrape/html-js` | JS-rendered HTML scrape | Browser-rendered |
 | `POST` | `/api/operators/website/scrape/content` | Markdown content extraction | Uses markdown service when configured |
 | `POST` | `/api/operators/website/scrape/screenshot` | Full-page screenshot | Binary image result |
+| `POST` | `/api/operators/website/evidence` | Bounded isolated public evidence capture | Exact body, redirect, digest, browser, and timing receipts; refuses authentication targets |
+| `GET` | `/api/operators/website/evidence/metrics` | Read evidence capture saturation | Active concurrency and bounded queue depth |
 
 ## Google AI Search Endpoints
 

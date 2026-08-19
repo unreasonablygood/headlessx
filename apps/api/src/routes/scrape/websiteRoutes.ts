@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { EvidenceCaptureController } from '../../controllers/scrape/EvidenceCaptureController';
 import { ScrapeControllerV2 } from '../../controllers/scrape/ScrapeControllerV2';
 import { StreamingScrapeController } from '../../controllers/scrape/StreamingScrapeController';
 import { WebsiteWorkflowController } from '../../controllers/scrape/WebsiteWorkflowController';
@@ -39,5 +40,9 @@ router.post('/scrape/content', ScrapeControllerV2.getContent);
 
 // POST /api/operators/website/scrape/screenshot - Full page screenshot (JPEG)
 router.post('/scrape/screenshot', ScrapeControllerV2.getScreenshot);
+
+// POST /api/operators/website/evidence - strict claim-free evidence capture
+router.post('/evidence', EvidenceCaptureController.capture);
+router.get('/evidence/metrics', EvidenceCaptureController.metrics);
 
 export default router;

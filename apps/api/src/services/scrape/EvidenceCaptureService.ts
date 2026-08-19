@@ -1,0 +1,745 @@
+import { createHash } from 'node:crypto';
+import type { LookupAddress } from 'node:dns';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
+import type {
+  Request as BrowserRequest,
+  Response as BrowserResponse,
+  Route,
+} from 'playwright-core';
+import { browserService, type IsolatedBrowserPage } from './BrowserService';
+
+const SCHEMA_VERSION = 'fleet.headlessx-evidence/v1';
+const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+const MIN_MAX_BYTES = 64 * 1024;
+const HARD_MAX_BYTES = 16 * 1024 * 1024;
+const MAX_LINKS = 2_000;
+const MAX_URL_BYTES = 8 * 1024;
+const MIN_TIMEOUT_MS = 2_000;
+const MAX_TIMEOUT_MS = 55_000;
+const DEFAULT_TIMEOUT_MS = 45_000;
+const MAX_QUEUE_WAIT_MS = boundedEnv('HEADLESSX_EVIDENCE_QUEUE_TIMEOUT_MS', 5_000, 100, 30_000);
+const MAX_CONCURRENCY = boundedEnv('HEADLESSX_EVIDENCE_MAX_CONCURRENCY', 2, 1, 8);
+const MAX_QUEUE_DEPTH = boundedEnv('HEADLESSX_EVIDENCE_MAX_QUEUE_DEPTH', 8, 0, 64);
+const AUTH_PATH = /\/(?:auth|authorize|login|log-in|oauth2?|sign-in|signin)(?:\/|$)/i;
+const CREDENTIAL_QUERY =
+  /^(?:access[_-]?token|api[_-]?key|auth|authorization|bearer|cookie|password|session|sig|signature|token)$/i;
+const ALLOWED_HEADERS = new Set([
+  'cache-control',
+  'content-disposition',
+  'content-encoding',
+  'content-language',
+  'content-length',
+  'content-type',
+  'etag',
+  'last-modified',
+]);
+
+export type EvidenceCaptureKind = 'document' | 'artifact';
+
+export interface EvidenceCaptureRequest {
+  url: string;
+  kind: EvidenceCaptureKind;
+  timeoutMs?: number;
+  maxBytes?: number;
+}
+
+interface CaptureMetrics {
+  queueMs: number;
+  renderMs: number;
+  activeConcurrency: number;
+  maxConcurrency: number;
+  queuedRequests: number;
+  outcome: 'success' | 'failure' | 'timeout';
+}
+
+interface EvidenceScreenshot {
+  mediaType: 'image/png';
+  encoding: 'base64';
+  data: string;
+  sha256: string;
+  byteLength: number;
+}
+
+interface EvidenceInteraction {
+  ordinal: number;
+  action:
+    | 'navigate'
+    | 'wait_for_document'
+    | 'capture_source'
+    | 'capture_dom'
+    | 'capture_screenshot';
+  startedAt: string;
+  completedAt: string;
+  outcome: 'success';
+}
+
+export interface EvidenceCaptureResult {
+  schemaVersion: typeof SCHEMA_VERSION;
+  producer: {
+    name: 'headlessx';
+    version: string;
+    sourceCommit: string;
+  };
+  requestedUrl: string;
+  finalUrl: string;
+  redirectChain: string[];
+  status: number;
+  headers: Record<string, string>;
+  contentType: string | null;
+  body: {
+    encoding: 'base64';
+    data: string;
+    sha256: string;
+    byteLength: number;
+  };
+  html: string | null;
+  markdown: string | null;
+  screenshot: EvidenceScreenshot | null;
+  links: string[];
+  metadata: Record<string, unknown>;
+  browser: {
+    name: 'headfox';
+    version: string;
+    viewportWidth: number;
+    viewportHeight: number;
+    javascriptEnabled: true;
+    isolatedSession: true;
+  };
+  interactions: EvidenceInteraction[];
+  fetchedAt: string;
+  metrics: CaptureMetrics;
+}
+
+export class EvidenceCaptureError extends Error {
+  public metrics?: CaptureMetrics;
+
+  public constructor(
+    public readonly status: number,
+    public readonly code: string,
+    public readonly retryable: boolean,
+    public readonly phase: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+interface Permit {
+  queueMs: number;
+  activeConcurrency: number;
+  queuedRequests: number;
+  release: () => void;
+}
+
+interface QueueWaiter {
+  enqueuedAt: number;
+  settled: boolean;
+  timer: NodeJS.Timeout;
+  resolve: (permit: Permit) => void;
+  reject: (error: EvidenceCaptureError) => void;
+}
+
+class BoundedCaptureGate {
+  private active = 0;
+  private readonly waiters: QueueWaiter[] = [];
+
+  public async acquire(timeoutMs: number): Promise<Permit> {
+    if (this.active < MAX_CONCURRENCY) {
+      this.active += 1;
+      return this.permit(performance.now());
+    }
+    if (this.waiters.length >= MAX_QUEUE_DEPTH) {
+      throw new EvidenceCaptureError(
+        429,
+        'evidence_queue_full',
+        true,
+        'queue',
+        'the bounded evidence render queue is full',
+      );
+    }
+    const enqueuedAt = performance.now();
+    return new Promise<Permit>((resolve, reject) => {
+      const waiter: QueueWaiter = {
+        enqueuedAt,
+        settled: false,
+        timer: setTimeout(() => {
+          if (waiter.settled) return;
+          waiter.settled = true;
+          const index = this.waiters.indexOf(waiter);
+          if (index >= 0) this.waiters.splice(index, 1);
+          reject(
+            new EvidenceCaptureError(
+              504,
+              'evidence_queue_timeout',
+              true,
+              'queue',
+              'the bounded evidence render queue wait expired',
+            ),
+          );
+        }, timeoutMs),
+        resolve,
+        reject,
+      };
+      this.waiters.push(waiter);
+    });
+  }
+
+  private permit(enqueuedAt: number): Permit {
+    let released = false;
+    return {
+      queueMs: Math.round(performance.now() - enqueuedAt),
+      activeConcurrency: this.active,
+      queuedRequests: this.waiters.length,
+      release: () => {
+        if (released) return;
+        released = true;
+        this.active = Math.max(0, this.active - 1);
+        this.startNext();
+      },
+    };
+  }
+
+  private startNext(): void {
+    while (this.active < MAX_CONCURRENCY) {
+      const waiter = this.waiters.shift();
+      if (!waiter) return;
+      if (waiter.settled) continue;
+      waiter.settled = true;
+      clearTimeout(waiter.timer);
+      this.active += 1;
+      waiter.resolve(this.permit(waiter.enqueuedAt));
+    }
+  }
+
+  public snapshot(): Record<string, number> {
+    return {
+      activeConcurrency: this.active,
+      maxConcurrency: MAX_CONCURRENCY,
+      maxQueueDepth: MAX_QUEUE_DEPTH,
+      queuedRequests: this.waiters.length,
+    };
+  }
+}
+
+const captureGate = new BoundedCaptureGate();
+
+export class EvidenceCaptureService {
+  public async capture(input: EvidenceCaptureRequest): Promise<EvidenceCaptureResult> {
+    const timeoutMs = boundedRequest(
+      input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      MIN_TIMEOUT_MS,
+      MAX_TIMEOUT_MS,
+      'invalid_timeout',
+    );
+    const maxBytes = boundedRequest(
+      input.maxBytes ?? DEFAULT_MAX_BYTES,
+      MIN_MAX_BYTES,
+      HARD_MAX_BYTES,
+      'invalid_max_bytes',
+    );
+    const requestedUrl = await admitPublicUrl(input.url, true);
+    const sourceCommit = requireSourceCommit();
+    const queueTimeoutMs = Math.min(timeoutMs, MAX_QUEUE_WAIT_MS);
+    const permit = await captureGate.acquire(queueTimeoutMs);
+    const remainingMs = timeoutMs - permit.queueMs;
+    if (remainingMs < MIN_TIMEOUT_MS) {
+      permit.release();
+      throw new EvidenceCaptureError(
+        504,
+        'evidence_deadline_exhausted',
+        true,
+        'queue',
+        'the evidence deadline expired before rendering could start',
+      );
+    }
+
+    const renderStarted = performance.now();
+    const work = this.captureWithinBrowser(
+      requestedUrl,
+      input.kind,
+      remainingMs,
+      maxBytes,
+      sourceCommit,
+    );
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () =>
+          reject(
+            new EvidenceCaptureError(
+              504,
+              'evidence_render_timeout',
+              true,
+              'render',
+              'the bounded evidence render deadline expired',
+            ),
+          ),
+        remainingMs,
+      );
+    });
+    try {
+      const result = await Promise.race([work, timeout]);
+      const metrics: CaptureMetrics = {
+        queueMs: permit.queueMs,
+        renderMs: Math.round(performance.now() - renderStarted),
+        activeConcurrency: permit.activeConcurrency,
+        maxConcurrency: MAX_CONCURRENCY,
+        queuedRequests: permit.queuedRequests,
+        outcome: 'success',
+      };
+      console.info('headlessx evidence capture completed', metrics);
+      permit.release();
+      return { ...result, metrics };
+    } catch (error) {
+      const mapped = mapCaptureError(error);
+      mapped.metrics = {
+        queueMs: permit.queueMs,
+        renderMs: Math.round(performance.now() - renderStarted),
+        activeConcurrency: permit.activeConcurrency,
+        maxConcurrency: MAX_CONCURRENCY,
+        queuedRequests: permit.queuedRequests,
+        outcome: mapped.code.includes('timeout') ? 'timeout' : 'failure',
+      };
+      console.warn('headlessx evidence capture failed', {
+        ...mapped.metrics,
+        code: mapped.code,
+        phase: mapped.phase,
+      });
+      if (mapped.code === 'evidence_render_timeout') {
+        void work.catch(() => undefined).finally(permit.release);
+      } else {
+        permit.release();
+      }
+      throw mapped;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+  }
+
+  private async captureWithinBrowser(
+    requestedUrl: string,
+    kind: EvidenceCaptureKind,
+    timeoutMs: number,
+    maxBytes: number,
+    sourceCommit: string,
+  ): Promise<Omit<EvidenceCaptureResult, 'metrics'>> {
+    let capture: IsolatedBrowserPage | undefined;
+    let browserDeadline: NodeJS.Timeout | undefined;
+    try {
+      capture = await browserService.getIsolatedEvidencePage();
+      const { browser, page, viewport } = capture;
+      browserDeadline = setTimeout(() => {
+        void browser.close().catch(() => undefined);
+      }, timeoutMs);
+      page.setDefaultTimeout(timeoutMs);
+      page.setDefaultNavigationTimeout(timeoutMs);
+      const navigationUrls: string[] = [];
+      const interactions: EvidenceInteraction[] = [];
+      let blocked: EvidenceCaptureError | undefined;
+      let latestDocumentResponse: BrowserResponse | null = null;
+      page.on('response', (candidate) => {
+        if (
+          candidate.request().isNavigationRequest() &&
+          candidate.request().frame() === page.mainFrame()
+        ) {
+          latestDocumentResponse = candidate;
+        }
+      });
+      await page.route('**/*', async (route: Route, request: BrowserRequest) => {
+        try {
+          const admittedUrl = await admitBrowserRequest(request);
+          if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+            navigationUrls.push(admittedUrl);
+          }
+          await route.continue();
+        } catch (error) {
+          blocked = mapCaptureError(error);
+          await route.abort('blockedbyclient').catch(() => undefined);
+        }
+      });
+
+      let response: BrowserResponse | null;
+      const navigationStarted = new Date().toISOString();
+      try {
+        response = await page.goto(requestedUrl, {
+          timeout: timeoutMs,
+          waitUntil: kind === 'document' ? 'domcontentloaded' : 'commit',
+        });
+      } catch (error) {
+        if (blocked) throw blocked;
+        throw error;
+      }
+      interactions.push(successfulInteraction(1, 'navigate', navigationStarted));
+      if (blocked) throw blocked;
+      if (!response) {
+        throw new EvidenceCaptureError(
+          502,
+          'evidence_missing_response',
+          true,
+          'navigation',
+          'the browser did not expose the main response',
+        );
+      }
+
+      if (kind === 'document') {
+        const waitStarted = new Date().toISOString();
+        await page
+          .waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 8_000) })
+          .catch(() => undefined);
+        await page.waitForTimeout(250);
+        if (blocked) throw blocked;
+        response = latestDocumentResponse ?? response;
+        interactions.push(successfulInteraction(2, 'wait_for_document', waitStarted));
+        if ((await page.locator('input[type="password"]').count()) > 0) {
+          throw invalidTarget();
+        }
+      }
+
+      const finalUrl = await admitPublicUrl(page.url(), true);
+      const redirectChain = mergeNavigationChain(
+        await responseRedirectChain(response),
+        navigationUrls,
+        finalUrl,
+      );
+      const headers = allowlistedHeaders(await response.allHeaders());
+      const contentType = headers['content-type'] ?? null;
+      rejectOversizedContentLength(headers['content-length'], maxBytes);
+      const sourceStarted = new Date().toISOString();
+      const body = await response.body();
+      interactions.push(
+        successfulInteraction(kind === 'document' ? 3 : 2, 'capture_source', sourceStarted),
+      );
+      enforceAggregateSize(maxBytes, body);
+
+      let html: string | null = null;
+      let markdown: string | null = null;
+      let screenshot: EvidenceScreenshot | null = null;
+      let links: string[] = [];
+      let metadata: Record<string, unknown> = {};
+      if (kind === 'document') {
+        if (!contentType?.toLowerCase().includes('html')) {
+          throw new EvidenceCaptureError(
+            422,
+            'evidence_unsupported_content',
+            false,
+            'response',
+            'the rendered document response is not HTML',
+          );
+        }
+        const domStarted = new Date().toISOString();
+        html = await page.content();
+        markdown = await page
+          .locator('body')
+          .innerText()
+          .catch(() => '');
+        interactions.push(successfulInteraction(4, 'capture_dom', domStarted));
+        const screenshotStarted = new Date().toISOString();
+        const screenshotBytes = await page.screenshot({ fullPage: false, type: 'png' });
+        interactions.push(successfulInteraction(5, 'capture_screenshot', screenshotStarted));
+        enforceAggregateSize(
+          maxBytes,
+          body,
+          Buffer.from(html),
+          Buffer.from(markdown),
+          screenshotBytes,
+        );
+        screenshot = {
+          mediaType: 'image/png',
+          encoding: 'base64',
+          data: screenshotBytes.toString('base64'),
+          sha256: sha256(screenshotBytes),
+          byteLength: screenshotBytes.length,
+        };
+        links = await page
+          .locator('a[href]')
+          .evaluateAll((anchors) =>
+            Array.from(
+              new Set(
+                anchors
+                  .map((anchor) => (anchor as HTMLAnchorElement).href)
+                  .filter((url) => url.startsWith('http://') || url.startsWith('https://')),
+              ),
+            ).slice(0, MAX_LINKS),
+          );
+        metadata = await page.evaluate(() => ({
+          language: document.documentElement.lang || null,
+          title: document.title,
+        }));
+      }
+
+      return {
+        schemaVersion: SCHEMA_VERSION,
+        producer: {
+          name: 'headlessx',
+          version: process.env.npm_package_version ?? '2.1.2',
+          sourceCommit,
+        },
+        requestedUrl,
+        finalUrl,
+        redirectChain,
+        status: response.status(),
+        headers,
+        contentType,
+        body: {
+          encoding: 'base64',
+          data: body.toString('base64'),
+          sha256: sha256(body),
+          byteLength: body.length,
+        },
+        html,
+        markdown,
+        screenshot,
+        links,
+        metadata,
+        browser: {
+          name: 'headfox',
+          version: browser.version(),
+          viewportWidth: viewport.width,
+          viewportHeight: viewport.height,
+          javascriptEnabled: true,
+          isolatedSession: true,
+        },
+        interactions,
+        fetchedAt: new Date().toISOString(),
+      };
+    } finally {
+      if (browserDeadline) clearTimeout(browserDeadline);
+      if (capture) await browserService.releaseIsolatedEvidencePage(capture);
+    }
+  }
+}
+
+async function admitBrowserRequest(request: BrowserRequest): Promise<string> {
+  const value = request.url();
+  if (value.startsWith('data:') || value.startsWith('blob:') || value === 'about:blank') {
+    return value;
+  }
+  return admitPublicUrl(value, request.isNavigationRequest());
+}
+
+function successfulInteraction(
+  ordinal: number,
+  action: EvidenceInteraction['action'],
+  startedAt: string,
+): EvidenceInteraction {
+  return {
+    ordinal,
+    action,
+    startedAt,
+    completedAt: new Date().toISOString(),
+    outcome: 'success',
+  };
+}
+
+function mergeNavigationChain(
+  redirects: string[],
+  navigations: string[],
+  finalUrl: string,
+): string[] {
+  const chain: string[] = [];
+  for (const url of [...navigations, ...redirects]) {
+    if (url !== finalUrl && chain.at(-1) !== url) chain.push(url);
+  }
+  return chain;
+}
+
+async function admitPublicUrl(value: string, rejectAuthentication: boolean): Promise<string> {
+  if (Buffer.byteLength(value) > MAX_URL_BYTES) throw invalidTarget();
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw invalidTarget();
+  }
+  if (
+    !['http:', 'https:'].includes(url.protocol) ||
+    !url.hostname ||
+    url.username ||
+    url.password ||
+    (rejectAuthentication && AUTH_PATH.test(url.pathname)) ||
+    (rejectAuthentication && [...url.searchParams.keys()].some((key) => CREDENTIAL_QUERY.test(key)))
+  ) {
+    throw invalidTarget();
+  }
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  if (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal')
+  ) {
+    throw invalidTarget();
+  }
+  // Resolve on every browser request. A capture-local positive cache would let
+  // DNS rebinding evade the later admission checks.
+  await admitHost(host);
+  return url.toString();
+}
+
+async function admitHost(host: string): Promise<void> {
+  if (isIP(host)) {
+    if (!isGlobalIp(host)) throw invalidTarget();
+    return;
+  }
+  let addresses: LookupAddress[];
+  try {
+    addresses = await lookup(host, { all: true, verbatim: true });
+  } catch {
+    throw new EvidenceCaptureError(
+      502,
+      'evidence_dns_failed',
+      true,
+      'admission',
+      'the public target could not be resolved',
+    );
+  }
+  if (addresses.length === 0 || addresses.some(({ address }) => !isGlobalIp(address))) {
+    throw invalidTarget();
+  }
+}
+
+function isGlobalIp(address: string): boolean {
+  if (isIP(address) === 4) {
+    const [a, b, c] = address.split('.').map(Number);
+    return !(
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 0 && c === 0) ||
+      (a === 192 && b === 0 && c === 2) ||
+      (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      (a === 198 && b === 51 && c === 100) ||
+      (a === 203 && b === 0 && c === 113) ||
+      a >= 224
+    );
+  }
+  if (isIP(address) === 6) {
+    const normalized = address.toLowerCase();
+    if (normalized.startsWith('::ffff:')) return isGlobalIp(normalized.slice(7));
+    const first = Number.parseInt(normalized.split(':', 1)[0] || '0', 16);
+    return (
+      first >= 0x2000 &&
+      first <= 0x3fff &&
+      !normalized.startsWith('2001:db8:') &&
+      normalized !== '2001:db8::'
+    );
+  }
+  return false;
+}
+
+async function responseRedirectChain(response: BrowserResponse): Promise<string[]> {
+  const chain: string[] = [];
+  let request: BrowserRequest | null = response.request().redirectedFrom();
+  while (request) {
+    chain.unshift(await admitPublicUrl(request.url(), true));
+    request = request.redirectedFrom();
+  }
+  return chain;
+}
+
+function allowlistedHeaders(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers)
+      .map(([name, value]) => [name.toLowerCase(), value] as const)
+      .filter(([name, value]) => ALLOWED_HEADERS.has(name) && Buffer.byteLength(value) <= 8_192),
+  );
+}
+
+function enforceAggregateSize(maxBytes: number, ...values: Buffer[]): void {
+  const total = values.reduce((sum, value) => sum + value.length, 0);
+  if (total > maxBytes) {
+    throw new EvidenceCaptureError(
+      413,
+      'evidence_capture_too_large',
+      false,
+      'response',
+      'the evidence capture exceeded its configured byte bound',
+    );
+  }
+}
+
+function rejectOversizedContentLength(value: string | undefined, maxBytes: number): void {
+  if (!value) return;
+  const length = Number(value);
+  if (!Number.isSafeInteger(length) || length < 0 || length > maxBytes) {
+    throw new EvidenceCaptureError(
+      413,
+      'evidence_capture_too_large',
+      false,
+      'response',
+      'the evidence capture exceeded its configured byte bound',
+    );
+  }
+}
+
+function boundedRequest(value: number, min: number, max: number, code: string): number {
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new EvidenceCaptureError(400, code, false, 'request', 'the evidence request is invalid');
+  }
+  return value;
+}
+
+function boundedEnv(name: string, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
+
+function requireSourceCommit(): string {
+  const value = process.env.HEADLESSX_SOURCE_COMMIT?.trim() ?? '';
+  if (![40, 64].includes(value.length) || !/^[0-9a-f]+$/.test(value)) {
+    throw new EvidenceCaptureError(
+      503,
+      'evidence_source_version_unavailable',
+      false,
+      'configuration',
+      'the evidence producer source version is unavailable',
+    );
+  }
+  return value;
+}
+
+function invalidTarget(): EvidenceCaptureError {
+  return new EvidenceCaptureError(
+    422,
+    'unsafe_or_authenticated_target',
+    false,
+    'admission',
+    'the target is not an unauthenticated public HTTP URL',
+  );
+}
+
+function mapCaptureError(error: unknown): EvidenceCaptureError {
+  if (error instanceof EvidenceCaptureError) return error;
+  const message = error instanceof Error ? error.message.toLowerCase() : '';
+  if (message.includes('timeout')) {
+    return new EvidenceCaptureError(
+      504,
+      'evidence_render_timeout',
+      true,
+      'render',
+      'the bounded evidence render deadline expired',
+    );
+  }
+  return new EvidenceCaptureError(
+    502,
+    'evidence_browser_failed',
+    true,
+    'render',
+    'the isolated browser could not produce a verified capture',
+  );
+}
+
+function sha256(value: Buffer): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
+export const evidenceCaptureService = new EvidenceCaptureService();
+
+export function getEvidenceCaptureMetrics(): Record<string, number> {
+  return captureGate.snapshot();
+}

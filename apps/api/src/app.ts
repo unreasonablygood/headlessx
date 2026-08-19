@@ -106,6 +106,8 @@ app.get('/api/health', (req, res) => {
             website: '/api/operators/website/*',
             websiteMap: '/api/operators/website/map',
             websiteCrawl: '/api/operators/website/crawl',
+            websiteEvidence: '/api/operators/website/evidence',
+            websiteEvidenceMetrics: '/api/operators/website/evidence/metrics',
             googleAiSearch: '/api/operators/google/ai-search/*',
             tavily: '/api/operators/tavily/*',
             exa: '/api/operators/exa/*',

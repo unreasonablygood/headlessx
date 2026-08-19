@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { Headfox } from 'headfox-js';
-import { BrowserContext, Page } from 'playwright-core';
+import type { Browser, BrowserContext, Page } from 'playwright-core';
 import { configService } from '../config/ConfigService';
 import { normalizeConfiguredProxyUrl } from '../proxy/ProxyConnection';
 
@@ -19,6 +19,13 @@ interface BrowserContextOptions {
 interface ViewportSize {
     width: number;
     height: number;
+}
+
+export interface IsolatedBrowserPage {
+    browser: Browser;
+    context: BrowserContext;
+    page: Page;
+    viewport: ViewportSize;
 }
 
 type CookieReadyMarkerReason = 'stopped' | 'browser_closed' | 'existing_profile';
@@ -411,6 +418,68 @@ class BrowserService {
         this.activePages += 1;
 
         return { page, context };
+    }
+
+    /**
+     * Launches an ephemeral browser with an empty context for claim-free public
+     * evidence capture. It intentionally does not reuse the persistent profile,
+     * cookies, local storage, permissions, or authenticated Google session.
+     */
+    public async getIsolatedEvidencePage(): Promise<IsolatedBrowserPage> {
+        this.ensureInteractiveSessionAvailable();
+        const config = await configService.getConfig();
+        const viewport = this.resolveViewport('headless');
+        const proxyServer = config.proxyEnabled
+            ? normalizeConfiguredProxyUrl(config.proxyUrl, config.proxyProtocol)
+            : undefined;
+        const proxyConfig = proxyServer ? { server: proxyServer } : undefined;
+        const browser = await Headfox({
+            headless: true,
+            proxy: proxyConfig,
+            geoip: proxyConfig ? config.camoufoxGeoip : false,
+            os: 'windows',
+            humanize: config.camoufoxHumanize ?? 2.5,
+            block_webrtc: config.camoufoxBlockWebrtc ?? true,
+            block_images: config.camoufoxBlockImages ?? false,
+            enable_cache: false,
+            window: [viewport.width, viewport.height],
+            firefox_user_prefs: {
+                'privacy.resistFingerprinting': false,
+                'dom.webdriver.enabled': false,
+                useragentoverride: '',
+                'general.appversion.override': '',
+                'general.platform.override': '',
+            },
+        });
+        try {
+            const context = await browser.newContext({
+                acceptDownloads: false,
+                serviceWorkers: 'block',
+                viewport,
+            });
+            const page = await context.newPage();
+            this.activePages += 1;
+            return { browser, context, page, viewport };
+        } catch (error) {
+            await browser.close().catch(() => undefined);
+            throw error;
+        }
+    }
+
+    public async releaseIsolatedEvidencePage(capture: IsolatedBrowserPage): Promise<void> {
+        try {
+            if (!capture.page.isClosed()) {
+                await capture.page.close();
+            }
+            await capture.context.close();
+        } catch {
+            // Closing the browser below is the recovery floor for partial cleanup.
+        } finally {
+            await capture.browser.close().catch(() => undefined);
+            if (this.activePages > 0) {
+                this.activePages -= 1;
+            }
+        }
     }
 
     public getViewportSize(): ViewportSize {
