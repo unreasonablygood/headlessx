@@ -519,7 +519,9 @@ class BrowserService {
             // Linux when it contains the newer `isMobile` member. The package's
             // persistent-context launcher already avoids that incompatibility
             // with `viewport: null`; apply the same supported context option to
-            // the browser-level fresh-page path, then size the page explicitly.
+            // the browser-level fresh-page path. The `window` launch option
+            // above supplies the native viewport without a second unsupported
+            // protocol resize.
             page = await browser.newPage({
                 acceptDownloads: false,
                 serviceWorkers: 'block',
@@ -529,14 +531,6 @@ class BrowserService {
             logIsolatedBrowserFailure('page', error);
             await browser.close().catch(() => undefined);
             throw new IsolatedEvidenceBrowserError('page');
-        }
-
-        try {
-            await page.setViewportSize(viewport);
-        } catch (error) {
-            logIsolatedBrowserFailure('viewport', error);
-            await browser.close().catch(() => undefined);
-            throw new IsolatedEvidenceBrowserError('viewport');
         }
 
         const context = page.context();
