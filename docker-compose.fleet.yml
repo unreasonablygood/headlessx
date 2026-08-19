@@ -75,6 +75,8 @@ services:
     build:
       context: .
       dockerfile: infra/docker/api.Dockerfile
+      args:
+        HEADLESSX_BUILD_SOURCE_COMMIT: ${SOURCE_COMMIT:?full-source-commit-required}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -108,6 +110,9 @@ services:
       - QUEUE_JOB_ATTEMPTS=${QUEUE_JOB_ATTEMPTS:-3}
       - QUEUE_JOB_BACKOFF_MS=${QUEUE_JOB_BACKOFF_MS:-5000}
       - QUEUE_STREAM_POLL_MS=${QUEUE_STREAM_POLL_MS:-1000}
+      - HEADLESSX_EVIDENCE_MAX_CONCURRENCY=${HEADLESSX_EVIDENCE_MAX_CONCURRENCY:-2}
+      - HEADLESSX_EVIDENCE_MAX_QUEUE_DEPTH=${HEADLESSX_EVIDENCE_MAX_QUEUE_DEPTH:-8}
+      - HEADLESSX_EVIDENCE_QUEUE_TIMEOUT_MS=${HEADLESSX_EVIDENCE_QUEUE_TIMEOUT_MS:-5000}
     ports:
       - "${API_HOST_PORT:-38473}:${PORT:-8000}"
     healthcheck:
