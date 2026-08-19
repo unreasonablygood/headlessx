@@ -14,6 +14,7 @@ import {
 } from './BrowserService';
 import {
   captureEvidenceStep,
+  collectBoundedPublicArtifact,
   collectBoundedPublicLinks,
   EvidenceCaptureStepError,
   selectMainDocumentResponse,
@@ -346,6 +347,8 @@ export class EvidenceCaptureService {
       page.setDefaultTimeout(timeoutMs);
       page.setDefaultNavigationTimeout(timeoutMs);
       const navigationUrls: string[] = [];
+      const artifactFetchUrls: string[] = [];
+      let artifactFetchActive = false;
       const interactions: EvidenceInteraction[] = [];
       let blocked: EvidenceCaptureError | undefined;
       let latestDocumentResponse: BrowserResponse | null = null;
@@ -362,6 +365,9 @@ export class EvidenceCaptureService {
           const admittedUrl = await admitBrowserRequest(request);
           if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
             navigationUrls.push(admittedUrl);
+          }
+          if (kind === 'artifact' && artifactFetchActive && request.resourceType() === 'fetch') {
+            artifactFetchUrls.push(admittedUrl);
           }
           await route.continue();
         } catch (error) {
@@ -405,14 +411,15 @@ export class EvidenceCaptureService {
         response = await selectMainDocumentResponse(response, () => latestDocumentResponse);
       }
 
-      const finalUrl = await admitPublicUrl(page.url(), true);
+      let finalUrl = await admitPublicUrl(page.url(), true);
       let redirectChain: string[];
       let headers: Record<string, string>;
       let contentType: string | null;
       let body: Buffer;
       let responseStatus: number;
       let capturedDomHtml: string | null = null;
-      let navigationResponseSource: 'network_response' | 'performance_navigation_timing';
+      let navigationResponseSource: 'network_response' | 'performance_navigation_timing' =
+        'network_response';
       const sourceStarted = new Date().toISOString();
       if (response) {
         redirectChain = mergeNavigationChain(
@@ -426,10 +433,38 @@ export class EvidenceCaptureService {
         body = await response.body();
         responseStatus = response.status();
         navigationResponseSource = 'network_response';
-      } else {
-        if (kind !== 'document') {
+      } else if (kind === 'artifact') {
+        artifactFetchActive = true;
+        const fallback = await captureEvidenceStep('artifact_fetch', () =>
+          page.evaluate(collectBoundedPublicArtifact, {
+            url: page.url(),
+            maxBytes,
+            allowedHeaders: [...ALLOWED_HEADERS],
+          }),
+        ).finally(() => {
+          artifactFetchActive = false;
+        });
+        if (fallback.outcome === 'too_large') {
+          throw captureTooLarge();
+        }
+        if (fallback.outcome === 'missing_body') {
           throw missingNavigationResponse();
         }
+        finalUrl = await admitPublicUrl(fallback.finalUrl, true);
+        redirectChain = mergeNavigationChain(
+          [],
+          [...navigationUrls, ...artifactFetchUrls],
+          finalUrl,
+        );
+        headers = allowlistedHeaders(fallback.headers);
+        contentType = headers['content-type'] ?? null;
+        rejectOversizedContentLength(headers['content-length'], maxBytes);
+        body = Buffer.from(fallback.data, 'base64');
+        if (body.length !== fallback.byteLength || body.length > maxBytes) {
+          throw captureTooLarge();
+        }
+        responseStatus = fallback.status;
+      } else {
         const navigationTiming = await captureEvidenceStep('navigation_timing', () =>
           page.evaluate(() => {
             const navigation = performance.getEntriesByType('navigation')[0] as
@@ -697,14 +732,18 @@ function allowlistedHeaders(headers: Record<string, string>): Record<string, str
 function enforceAggregateSize(maxBytes: number, ...values: Buffer[]): void {
   const total = values.reduce((sum, value) => sum + value.length, 0);
   if (total > maxBytes) {
-    throw new EvidenceCaptureError(
-      413,
-      'evidence_capture_too_large',
-      false,
-      'response',
-      'the evidence capture exceeded its configured byte bound',
-    );
+    throw captureTooLarge();
   }
+}
+
+function captureTooLarge(): EvidenceCaptureError {
+  return new EvidenceCaptureError(
+    413,
+    'evidence_capture_too_large',
+    false,
+    'response',
+    'the evidence capture exceeded its configured byte bound',
+  );
 }
 
 function rejectOversizedContentLength(value: string | undefined, maxBytes: number): void {
