@@ -41,11 +41,19 @@ test('rejects missing status and non-HTML navigation timing fallbacks', () => {
   expect(validateRenderedDocumentFallback(200, 'image/png')).toBeNull();
 });
 
-test('labels a failed browser capture operation without preserving its unsafe error', async () => {
-  const failure = captureEvidenceStep('navigation_timing', async () => {
-    throw new Error('unsafe browser detail');
-  });
+test('labels every bounded browser capture operation without preserving its unsafe error', async () => {
+  for (const step of [
+    'navigation_timing',
+    'dom_source',
+    'screenshot',
+    'links',
+    'metadata',
+  ] as const) {
+    const failure = captureEvidenceStep(step, async () => {
+      throw new Error('unsafe browser detail');
+    });
 
-  await expect(failure).rejects.toEqual(new EvidenceCaptureStepError('navigation_timing'));
-  await expect(failure).rejects.not.toHaveProperty('message', 'unsafe browser detail');
+    await expect(failure).rejects.toEqual(new EvidenceCaptureStepError(step));
+    await expect(failure).rejects.not.toHaveProperty('message', 'unsafe browser detail');
+  }
 });
