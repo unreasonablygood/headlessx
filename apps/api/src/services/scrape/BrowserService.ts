@@ -28,7 +28,7 @@ export interface IsolatedBrowserPage {
     viewport: ViewportSize;
 }
 
-export type IsolatedEvidenceBrowserStage = 'launch' | 'context' | 'page';
+export type IsolatedEvidenceBrowserStage = 'launch' | 'context' | 'page' | 'viewport';
 
 export class IsolatedEvidenceBrowserError extends Error {
     public constructor(public readonly stage: IsolatedEvidenceBrowserStage) {
@@ -477,19 +477,27 @@ class BrowserService {
             throw new IsolatedEvidenceBrowserError('launch');
         }
 
+        let page: Page;
         try {
-            const page = await browser.newPage();
-            const context = page.context();
-            await page.setViewportSize(viewport);
-            page.on('download', (download) => {
-                void download.cancel().catch(() => undefined);
-            });
-            this.activePages += 1;
-            return { browser, context, page, viewport };
+            page = await browser.newPage();
         } catch {
             await browser.close().catch(() => undefined);
             throw new IsolatedEvidenceBrowserError('page');
         }
+
+        try {
+            await page.setViewportSize(viewport);
+        } catch {
+            await browser.close().catch(() => undefined);
+            throw new IsolatedEvidenceBrowserError('viewport');
+        }
+
+        const context = page.context();
+        page.on('download', (download) => {
+            void download.cancel().catch(() => undefined);
+        });
+        this.activePages += 1;
+        return { browser, context, page, viewport };
     }
 
     public async releaseIsolatedEvidencePage(capture: IsolatedBrowserPage): Promise<void> {
