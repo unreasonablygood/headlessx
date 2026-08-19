@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" != "fast" ]; then
+	echo "usage: bin/check fast" >&2
+	exit 2
+fi
+
+bun test packages/headfox-js/test/persistent-context.test.ts
+(
+	cd packages/headfox-js
+	bunx biome check src/sync_api.ts test/persistent-context.test.ts
+)
+bun run build
