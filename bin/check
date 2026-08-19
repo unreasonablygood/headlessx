@@ -12,4 +12,4 @@ bun test packages/headfox-js/test/persistent-context.test.ts
 	bunx biome check src/sync_api.ts test/persistent-context.test.ts
 )
 headlessx_nx_data=$(mktemp -d "${TMPDIR:-/private/tmp}/headlessx-nx.XXXXXX")
-NX_WORKSPACE_DATA_DIRECTORY="$headlessx_nx_data" bun run build
+NX_DAEMON=false NX_WORKSPACE_DATA_DIRECTORY="$headlessx_nx_data" bun run build -- --parallel=1
