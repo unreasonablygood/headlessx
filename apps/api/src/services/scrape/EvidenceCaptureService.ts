@@ -12,7 +12,7 @@ import {
   type IsolatedBrowserPage,
   IsolatedEvidenceBrowserError,
 } from './BrowserService';
-import { selectMainDocumentResponse } from './EvidenceNavigation';
+import { selectMainDocumentResponse, validateRenderedDocumentFallback } from './EvidenceNavigation';
 
 const SCHEMA_VERSION = 'fleet.headlessx-evidence/v1';
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
@@ -399,27 +399,53 @@ export class EvidenceCaptureService {
         response = await selectMainDocumentResponse(response, () => latestDocumentResponse);
       }
 
-      if (!response) {
-        throw new EvidenceCaptureError(
-          502,
-          'evidence_missing_response',
-          true,
-          'navigation',
-          'the browser did not expose the main response',
-        );
-      }
-
       const finalUrl = await admitPublicUrl(page.url(), true);
-      const redirectChain = mergeNavigationChain(
-        await responseRedirectChain(response),
-        navigationUrls,
-        finalUrl,
-      );
-      const headers = allowlistedHeaders(await response.allHeaders());
-      const contentType = headers['content-type'] ?? null;
-      rejectOversizedContentLength(headers['content-length'], maxBytes);
+      let redirectChain: string[];
+      let headers: Record<string, string>;
+      let contentType: string | null;
+      let body: Buffer;
+      let responseStatus: number;
+      let capturedDomHtml: string | null = null;
+      let navigationResponseSource: 'network_response' | 'performance_navigation_timing';
       const sourceStarted = new Date().toISOString();
-      const body = await response.body();
+      if (response) {
+        redirectChain = mergeNavigationChain(
+          await responseRedirectChain(response),
+          navigationUrls,
+          finalUrl,
+        );
+        headers = allowlistedHeaders(await response.allHeaders());
+        contentType = headers['content-type'] ?? null;
+        rejectOversizedContentLength(headers['content-length'], maxBytes);
+        body = await response.body();
+        responseStatus = response.status();
+        navigationResponseSource = 'network_response';
+      } else {
+        if (kind !== 'document') {
+          throw missingNavigationResponse();
+        }
+        const navigationTiming = await page.evaluate(() => {
+          const navigation = performance.getEntriesByType('navigation')[0] as
+            | (PerformanceNavigationTiming & { responseStatus?: number })
+            | undefined;
+          return {
+            status: navigation?.responseStatus ?? 0,
+            contentType: document.contentType || '',
+          };
+        });
+        const fallback = validateRenderedDocumentFallback(
+          navigationTiming.status,
+          navigationTiming.contentType,
+        );
+        if (!fallback) throw missingNavigationResponse();
+        capturedDomHtml = await page.content();
+        body = Buffer.from(capturedDomHtml);
+        responseStatus = fallback.status;
+        contentType = fallback.contentType;
+        headers = {};
+        redirectChain = mergeNavigationChain([], navigationUrls, finalUrl);
+        navigationResponseSource = 'performance_navigation_timing';
+      }
       interactions.push(
         successfulInteraction(kind === 'document' ? 3 : 2, 'capture_source', sourceStarted),
       );
@@ -441,7 +467,7 @@ export class EvidenceCaptureService {
           );
         }
         const domStarted = new Date().toISOString();
-        html = await page.content();
+        html = capturedDomHtml ?? (await page.content());
         markdown = await page
           .locator('body')
           .innerText()
@@ -479,6 +505,7 @@ export class EvidenceCaptureService {
           language: document.documentElement.lang || null,
           title: document.title,
         }));
+        metadata.navigationResponseSource = navigationResponseSource;
       }
 
       return {
@@ -491,7 +518,7 @@ export class EvidenceCaptureService {
         requestedUrl,
         finalUrl,
         redirectChain,
-        status: response.status(),
+        status: responseStatus,
         headers,
         contentType,
         body: {
@@ -723,6 +750,16 @@ function invalidTarget(): EvidenceCaptureError {
     false,
     'admission',
     'the target is not an unauthenticated public HTTP URL',
+  );
+}
+
+function missingNavigationResponse(): EvidenceCaptureError {
+  return new EvidenceCaptureError(
+    502,
+    'evidence_missing_response',
+    true,
+    'navigation',
+    'the browser did not expose a verifiable main response',
   );
 }
 
