@@ -6,11 +6,17 @@ if [ "${1:-}" != "fast" ]; then
 	exit 2
 fi
 
-bun test packages/headfox-js/test/persistent-context.test.ts
+bun test \
+	packages/headfox-js/test/persistent-context.test.ts \
+	apps/api/src/services/scrape/EvidenceNavigation.test.ts
 (
 	cd packages/headfox-js
 	bunx biome check src/sync_api.ts test/persistent-context.test.ts
 )
+bunx biome check \
+	apps/api/src/services/scrape/EvidenceNavigation.ts \
+	apps/api/src/services/scrape/EvidenceNavigation.test.ts \
+	apps/api/src/services/scrape/EvidenceCaptureService.ts
 headlessx_nx_data=$(mktemp -d "${TMPDIR:-/tmp}/headlessx-nx.XXXXXX")
 NX_DAEMON=false \
 	NX_CACHE_DIRECTORY="$headlessx_nx_data/cache" \
