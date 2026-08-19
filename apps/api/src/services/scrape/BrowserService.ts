@@ -1,10 +1,9 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Headfox, installedVerStr } from 'headfox-js';
-import type { BrowserContext, Page } from 'playwright-core';
+import { Headfox } from 'headfox-js';
+import type { Browser, BrowserContext, Page } from 'playwright-core';
 import { configService } from '../config/ConfigService';
 import { normalizeConfiguredProxyUrl } from '../proxy/ProxyConnection';
 
@@ -23,11 +22,10 @@ interface ViewportSize {
 }
 
 export interface IsolatedBrowserPage {
+    browser: Browser;
     context: BrowserContext;
     page: Page;
     viewport: ViewportSize;
-    browserVersion: string;
-    profileDir: string;
 }
 
 export type IsolatedEvidenceBrowserStage = 'launch' | 'context' | 'page';
@@ -444,23 +442,14 @@ class BrowserService {
             ? normalizeConfiguredProxyUrl(config.proxyUrl, config.proxyProtocol)
             : undefined;
         const proxyConfig = proxyServer ? { server: proxyServer } : undefined;
-        let profileDir: string;
+        let browser: Browser;
         try {
-            profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'headlessx-evidence-'));
-        } catch {
-            throw new IsolatedEvidenceBrowserError('launch');
-        }
-
-        let context: BrowserContext;
-        try {
-            // Headfox's supported isolation primitive is a fresh persistent
-            // context. Its launcher disables the incompatible default device
-            // viewport for this path, while the unique empty profile keeps
-            // cookies, storage, permissions, and cache out of every other run.
-            context = await Headfox({
+            // A whole fresh browser per request is Headfox's supported
+            // isolated-page path. It avoids both the incompatible explicit
+            // newContext payload and production-specific persistent-profile
+            // launch behavior while sharing no cookies or browser storage.
+            browser = await Headfox({
                 headless: true,
-                acceptDownloads: false,
-                serviceWorkers: 'block',
                 proxy: proxyConfig,
                 geoip: proxyConfig ? config.camoufoxGeoip : false,
                 os: 'windows',
@@ -475,34 +464,30 @@ class BrowserService {
                 block_images: config.camoufoxBlockImages ?? false,
                 enable_cache: false,
                 window: [viewport.width, viewport.height],
-                user_data_dir: profileDir,
                 firefox_user_prefs: {
                     'privacy.resistFingerprinting': false,
                     'dom.webdriver.enabled': false,
+                    'dom.serviceWorkers.enabled': false,
                     useragentoverride: '',
                     'general.appversion.override': '',
                     'general.platform.override': '',
                 },
             });
         } catch {
-            await fs.promises.rm(profileDir, { recursive: true, force: true }).catch(() => undefined);
             throw new IsolatedEvidenceBrowserError('launch');
         }
 
         try {
-            const page = await context.newPage();
+            const page = await browser.newPage();
+            const context = page.context();
             await page.setViewportSize(viewport);
+            page.on('download', (download) => {
+                void download.cancel().catch(() => undefined);
+            });
             this.activePages += 1;
-            return {
-                context,
-                page,
-                viewport,
-                browserVersion: installedVerStr(),
-                profileDir,
-            };
+            return { browser, context, page, viewport };
         } catch {
-            await context.close().catch(() => undefined);
-            await fs.promises.rm(profileDir, { recursive: true, force: true }).catch(() => undefined);
+            await browser.close().catch(() => undefined);
             throw new IsolatedEvidenceBrowserError('page');
         }
     }
@@ -514,12 +499,9 @@ class BrowserService {
             }
             await capture.context.close();
         } catch {
-            // Closing the context below is the recovery floor for partial cleanup.
+            // Closing the browser below is the recovery floor for partial cleanup.
         } finally {
-            await capture.context.close().catch(() => undefined);
-            await fs.promises
-                .rm(capture.profileDir, { recursive: true, force: true })
-                .catch(() => undefined);
+            await capture.browser.close().catch(() => undefined);
             if (this.activePages > 0) {
                 this.activePages -= 1;
             }
