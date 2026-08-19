@@ -12,7 +12,12 @@ import {
   type IsolatedBrowserPage,
   IsolatedEvidenceBrowserError,
 } from './BrowserService';
-import { selectMainDocumentResponse, validateRenderedDocumentFallback } from './EvidenceNavigation';
+import {
+  captureEvidenceStep,
+  EvidenceCaptureStepError,
+  selectMainDocumentResponse,
+  validateRenderedDocumentFallback,
+} from './EvidenceNavigation';
 
 const SCHEMA_VERSION = 'fleet.headlessx-evidence/v1';
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
@@ -424,21 +429,23 @@ export class EvidenceCaptureService {
         if (kind !== 'document') {
           throw missingNavigationResponse();
         }
-        const navigationTiming = await page.evaluate(() => {
-          const navigation = performance.getEntriesByType('navigation')[0] as
-            | (PerformanceNavigationTiming & { responseStatus?: number })
-            | undefined;
-          return {
-            status: navigation?.responseStatus ?? 0,
-            contentType: document.contentType || '',
-          };
-        });
+        const navigationTiming = await captureEvidenceStep('navigation_timing', () =>
+          page.evaluate(() => {
+            const navigation = performance.getEntriesByType('navigation')[0] as
+              | (PerformanceNavigationTiming & { responseStatus?: number })
+              | undefined;
+            return {
+              status: navigation?.responseStatus ?? 0,
+              contentType: document.contentType || '',
+            };
+          }),
+        );
         const fallback = validateRenderedDocumentFallback(
           navigationTiming.status,
           navigationTiming.contentType,
         );
         if (!fallback) throw missingNavigationResponse();
-        capturedDomHtml = await page.content();
+        capturedDomHtml = await captureEvidenceStep('dom_source', () => page.content());
         body = Buffer.from(capturedDomHtml);
         responseStatus = fallback.status;
         contentType = fallback.contentType;
@@ -765,6 +772,15 @@ function missingNavigationResponse(): EvidenceCaptureError {
 
 function mapCaptureError(error: unknown): EvidenceCaptureError {
   if (error instanceof EvidenceCaptureError) return error;
+  if (error instanceof EvidenceCaptureStepError) {
+    return new EvidenceCaptureError(
+      502,
+      `evidence_${error.step}_failed`,
+      true,
+      error.step,
+      `the isolated browser could not complete its ${error.step} capture step`,
+    );
+  }
   if (error instanceof IsolatedEvidenceBrowserError) {
     return new EvidenceCaptureError(
       502,
