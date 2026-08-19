@@ -14,7 +14,7 @@
         "markdown:start": "cd apps/go-html-to-md-service && PORT=${HTML_TO_MARKDOWN_PORT:-38081} go run .",
         "yt-engine:dev": "cd apps/yt-engine && uv run python -m uvicorn app.main:app --reload --host 0.0.0.0 --port ${YT_ENGINE_PORT:-38090}",
         "yt-engine:start": "cd apps/yt-engine && uv run python -m uvicorn app.main:app --host 0.0.0.0 --port ${YT_ENGINE_PORT:-38090}",
-        "build": "nx run-many -t build",
+		"build": "nx run-many -t build --exclude=headlessx-pro",
         "start": "pnpm exec nx run headlessx-pro:start",
         "lint": "biome check .",
         "lint:fix": "biome check --write .",

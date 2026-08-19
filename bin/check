@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" != "fast" ]; then
+	echo "usage: bin/check fast" >&2
+	exit 2
+fi
+
+bun test packages/headfox-js/test/persistent-context.test.ts
+(
+	cd packages/headfox-js
+	bunx biome check src/sync_api.ts test/persistent-context.test.ts
+)
+headlessx_nx_data=$(mktemp -d "${TMPDIR:-/tmp}/headlessx-nx.XXXXXX")
+NX_DAEMON=false \
+	NX_CACHE_DIRECTORY="$headlessx_nx_data/cache" \
+	NX_WORKSPACE_DATA_DIRECTORY="$headlessx_nx_data/workspace" \
+	bun run build -- --parallel=1
