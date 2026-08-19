@@ -36,6 +36,17 @@ export async function captureEvidenceStep<T>(
   }
 }
 
+export function collectBoundedPublicLinks(limit: number): string[] {
+  const boundedLimit = Number.isInteger(limit) && limit > 0 ? limit : 0;
+  return Array.from(
+    new Set(
+      Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]'))
+        .map((anchor) => anchor.href)
+        .filter((url) => url.startsWith('http://') || url.startsWith('https://')),
+    ),
+  ).slice(0, boundedLimit);
+}
+
 export function validateRenderedDocumentFallback(
   status: number,
   contentType: string,
