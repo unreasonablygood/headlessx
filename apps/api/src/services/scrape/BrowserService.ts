@@ -39,15 +39,6 @@ export class IsolatedEvidenceBrowserError extends Error {
     }
 }
 
-export type IsolatedEvidenceBrowserStage = 'launch' | 'context' | 'page';
-
-export class IsolatedEvidenceBrowserError extends Error {
-    public constructor(public readonly stage: IsolatedEvidenceBrowserStage) {
-        super(`the isolated evidence browser failed during ${stage}`);
-        this.name = 'IsolatedEvidenceBrowserError';
-    }
-}
-
 type CookieReadyMarkerReason = 'stopped' | 'browser_closed' | 'existing_profile';
 
 interface CookieReadyMarker {
