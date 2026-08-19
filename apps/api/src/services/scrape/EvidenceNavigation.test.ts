@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 
 import {
   captureEvidenceStep,
+  collectBoundedPublicArtifact,
   collectBoundedPublicLinks,
   EvidenceCaptureStepError,
   selectMainDocumentResponse,
@@ -46,6 +47,7 @@ test('labels every bounded browser capture operation without preserving its unsa
   for (const step of [
     'navigation_timing',
     'dom_source',
+    'artifact_fetch',
     'screenshot',
     'links',
     'metadata',
@@ -56,6 +58,66 @@ test('labels every bounded browser capture operation without preserving its unsa
 
     await expect(failure).rejects.toEqual(new EvidenceCaptureStepError(step));
     await expect(failure).rejects.not.toHaveProperty('message', 'unsafe browser detail');
+  }
+});
+
+test('collects an exact bounded public artifact without credentials', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestInit: RequestInit | undefined;
+  globalThis.fetch = (async (_input, init) => {
+    requestInit = init;
+    return new Response(new Uint8Array([0, 1, 2, 255]), {
+      status: 200,
+      headers: {
+        'content-length': '4',
+        'content-type': 'image/png',
+        'x-private-detail': 'not retained',
+      },
+    });
+  }) as typeof fetch;
+
+  try {
+    expect(
+      await collectBoundedPublicArtifact({
+        url: 'https://example.com/logo.png',
+        maxBytes: 4,
+        allowedHeaders: ['content-length', 'content-type'],
+      }),
+    ).toEqual({
+      outcome: 'success',
+      finalUrl: '',
+      status: 200,
+      headers: { 'content-length': '4', 'content-type': 'image/png' },
+      data: 'AAEC/w==',
+      byteLength: 4,
+    });
+    expect(requestInit).toMatchObject({
+      cache: 'no-store',
+      credentials: 'omit',
+      redirect: 'follow',
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('stops a browser artifact stream at the hard byte bound', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(new Uint8Array([0, 1, 2, 3, 4]), {
+      status: 200,
+    })) as typeof fetch;
+
+  try {
+    expect(
+      await collectBoundedPublicArtifact({
+        url: 'https://example.com/large.bin',
+        maxBytes: 4,
+        allowedHeaders: [],
+      }),
+    ).toEqual({ outcome: 'too_large' });
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

@@ -15,9 +15,22 @@ export interface RenderedDocumentFallback {
 export type EvidenceCaptureStep =
   | 'navigation_timing'
   | 'dom_source'
+  | 'artifact_fetch'
   | 'screenshot'
   | 'links'
   | 'metadata';
+
+export type BrowserArtifactCapture =
+  | {
+      outcome: 'success';
+      finalUrl: string;
+      status: number;
+      headers: Record<string, string>;
+      data: string;
+      byteLength: number;
+    }
+  | { outcome: 'too_large' }
+  | { outcome: 'missing_body' };
 
 export class EvidenceCaptureStepError extends Error {
   public constructor(public readonly step: EvidenceCaptureStep) {
@@ -45,6 +58,63 @@ export function collectBoundedPublicLinks(limit: number): string[] {
         .filter((url) => url.startsWith('http://') || url.startsWith('https://')),
     ),
   ).slice(0, boundedLimit);
+}
+
+export async function collectBoundedPublicArtifact(input: {
+  url: string;
+  maxBytes: number;
+  allowedHeaders: string[];
+}): Promise<BrowserArtifactCapture> {
+  const response = await fetch(input.url, {
+    cache: 'no-store',
+    credentials: 'omit',
+    redirect: 'follow',
+  });
+  const declaredLength = Number.parseInt(response.headers.get('content-length') ?? '', 10);
+  if (Number.isSafeInteger(declaredLength) && declaredLength > input.maxBytes) {
+    return { outcome: 'too_large' };
+  }
+  if (!response.body) return { outcome: 'missing_body' };
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    byteLength += next.value.byteLength;
+    if (byteLength > input.maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return { outcome: 'too_large' };
+    }
+    chunks.push(next.value);
+  }
+
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  let binary = '';
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  const allowedHeaders = new Set(input.allowedHeaders.map((name) => name.toLowerCase()));
+  const headers: Record<string, string> = {};
+  response.headers.forEach((value, name) => {
+    if (allowedHeaders.has(name.toLowerCase()) && value.length <= 8_192) {
+      headers[name.toLowerCase()] = value;
+    }
+  });
+  return {
+    outcome: 'success',
+    finalUrl: response.url,
+    status: response.status,
+    headers,
+    data: btoa(binary),
+    byteLength,
+  };
 }
 
 export function validateRenderedDocumentFallback(
