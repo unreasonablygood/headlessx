@@ -92,8 +92,19 @@ Only the queue-backed website crawl flow requires Redis. The other website opera
 | `POST` | `/api/operators/website/scrape/html-js` | JS-rendered HTML scrape | Browser-rendered |
 | `POST` | `/api/operators/website/scrape/content` | Markdown content extraction | Uses markdown service when configured |
 | `POST` | `/api/operators/website/scrape/screenshot` | Full-page screenshot | Binary image result |
-| `POST` | `/api/operators/website/evidence` | Bounded isolated public evidence capture | Exact body, redirect, digest, browser, and timing receipts; refuses authentication targets |
+| `POST` | `/api/operators/website/evidence` | Bounded isolated public evidence capture | Strict `document`, `artifact`, or `element` body; exact bytes, redirect, digest, browser, and timing receipts; refuses authentication targets |
 | `GET` | `/api/operators/website/evidence/metrics` | Read evidence capture saturation | Active concurrency and bounded queue depth |
+
+The `element` evidence kind is intentionally narrower than the screenshot API.
+It accepts one stable `#id` or `.class` selector and expected public identity,
+then uses the same isolated session as the rendered document. The selected DOM
+node must be unique, visible, inside the viewport, and bounded to 800 by 320
+pixels, 160,000 pixels of area, and 30 percent of the viewport. It must contain
+exactly one image, inline SVG, or CSS background image plus visible authored
+identity text. Hidden regions, canvas/video/iframe, product/gallery/partner
+contexts, multi-image strips, and identity mismatches are refused. The response
+includes the PNG, bounds, viewport, primitive and identity evidence, stable
+description, screenshot digest, and the ordinary parent document evidence.
 
 ## Google AI Search Endpoints
 

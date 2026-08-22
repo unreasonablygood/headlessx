@@ -4,6 +4,7 @@ import { isIP } from 'node:net';
 import type {
   Request as BrowserRequest,
   Response as BrowserResponse,
+  Page,
   Route,
 } from 'playwright-core';
 import {
@@ -12,6 +13,7 @@ import {
   IsolatedEvidenceBrowserError,
 } from './BrowserService';
 import { evidenceSha256 } from './EvidenceIntegrity';
+import { type LogoElementInspection, validateLogoElementEvidence } from './EvidenceLogoElement';
 import {
   captureEvidenceStep,
   collectBoundedPublicArtifact,
@@ -26,6 +28,7 @@ const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
 const MIN_MAX_BYTES = 64 * 1024;
 const HARD_MAX_BYTES = 16 * 1024 * 1024;
 const MAX_LINKS = 2_000;
+const MAX_ELEMENT_SCREENSHOT_BYTES = 4 * 1024 * 1024;
 const MAX_URL_BYTES = 8 * 1024;
 const MIN_TIMEOUT_MS = 2_000;
 const MAX_TIMEOUT_MS = 55_000;
@@ -47,11 +50,17 @@ const ALLOWED_HEADERS = new Set([
   'last-modified',
 ]);
 
-export type EvidenceCaptureKind = 'document' | 'artifact';
+export type EvidenceCaptureKind = 'document' | 'artifact' | 'element';
+
+export interface EvidenceElementRequest {
+  selector: string;
+  expectedIdentity: string;
+}
 
 export interface EvidenceCaptureRequest {
   url: string;
   kind: EvidenceCaptureKind;
+  element?: EvidenceElementRequest;
   timeoutMs?: number;
   maxBytes?: number;
 }
@@ -86,6 +95,34 @@ interface EvidenceInteraction {
   outcome: 'success';
 }
 
+interface EvidenceElementBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface EvidenceElementCapture {
+  selector: string;
+  stableDescription: string;
+  expectedIdentity: string;
+  identityEvidence: string;
+  tagName: string;
+  role: string | null;
+  visibleText: string;
+  boundingBox: EvidenceElementBounds;
+  viewport: { width: number; height: number };
+  primitives: {
+    imageCount: number;
+    svgCount: number;
+    backgroundImageCount: number;
+    canvasCount: number;
+    videoCount: number;
+    iframeCount: number;
+  };
+  screenshot: EvidenceScreenshot;
+}
+
 export interface EvidenceCaptureResult {
   schemaVersion: typeof SCHEMA_VERSION;
   producer: {
@@ -108,6 +145,7 @@ export interface EvidenceCaptureResult {
   html: string | null;
   markdown: string | null;
   screenshot: EvidenceScreenshot | null;
+  element?: EvidenceElementCapture;
   links: string[];
   metadata: Record<string, unknown>;
   browser: {
@@ -270,6 +308,7 @@ export class EvidenceCaptureService {
     const work = this.captureWithinBrowser(
       requestedUrl,
       input.kind,
+      input.element,
       remainingMs,
       maxBytes,
       sourceCommit,
@@ -332,6 +371,7 @@ export class EvidenceCaptureService {
   private async captureWithinBrowser(
     requestedUrl: string,
     kind: EvidenceCaptureKind,
+    elementRequest: EvidenceElementRequest | undefined,
     timeoutMs: number,
     maxBytes: number,
     sourceCommit: string,
@@ -381,7 +421,7 @@ export class EvidenceCaptureService {
       try {
         response = await page.goto(requestedUrl, {
           timeout: timeoutMs,
-          waitUntil: kind === 'document' ? 'domcontentloaded' : 'commit',
+          waitUntil: kind === 'artifact' ? 'commit' : 'domcontentloaded',
         });
       } catch (error) {
         if (blocked) throw blocked;
@@ -390,7 +430,7 @@ export class EvidenceCaptureService {
       interactions.push(successfulInteraction(1, 'navigate', navigationStarted));
       if (blocked) throw blocked;
 
-      if (kind === 'document') {
+      if (kind !== 'artifact') {
         const waitStarted = new Date().toISOString();
         response = await selectMainDocumentResponse(
           response,
@@ -490,16 +530,17 @@ export class EvidenceCaptureService {
         navigationResponseSource = 'performance_navigation_timing';
       }
       interactions.push(
-        successfulInteraction(kind === 'document' ? 3 : 2, 'capture_source', sourceStarted),
+        successfulInteraction(kind === 'artifact' ? 2 : 3, 'capture_source', sourceStarted),
       );
       enforceAggregateSize(maxBytes, body);
 
       let html: string | null = null;
       let markdown: string | null = null;
       let screenshot: EvidenceScreenshot | null = null;
+      let element: EvidenceElementCapture | undefined;
       let links: string[] = [];
       let metadata: Record<string, unknown> = {};
-      if (kind === 'document') {
+      if (kind !== 'artifact') {
         if (!contentType?.toLowerCase().includes('html')) {
           throw new EvidenceCaptureError(
             422,
@@ -535,6 +576,18 @@ export class EvidenceCaptureService {
           sha256: evidenceSha256(screenshotBytes),
           byteLength: screenshotBytes.length,
         };
+        if (kind === 'element') {
+          if (!elementRequest) throw invalidElementRequest();
+          element = await captureLogoElement(page, elementRequest, viewport);
+          enforceAggregateSize(
+            maxBytes,
+            body,
+            Buffer.from(html),
+            Buffer.from(markdown),
+            screenshotBytes,
+            Buffer.from(element.screenshot.data, 'base64'),
+          );
+        }
         links = await captureEvidenceStep('links', () =>
           page.evaluate(collectBoundedPublicLinks, MAX_LINKS),
         );
@@ -569,6 +622,7 @@ export class EvidenceCaptureService {
         html,
         markdown,
         screenshot,
+        element,
         links,
         metadata,
         browser: {
@@ -587,6 +641,145 @@ export class EvidenceCaptureService {
       if (capture) await browserService.releaseIsolatedEvidencePage(capture);
     }
   }
+}
+
+async function captureLogoElement(
+  page: Page,
+  request: EvidenceElementRequest,
+  viewport: { width: number; height: number },
+): Promise<EvidenceElementCapture> {
+  const locator = page.locator(request.selector);
+  if ((await locator.count()) !== 1 || !(await locator.isVisible())) {
+    throw invalidLogoElement('evidence_element_not_unique_or_visible');
+  }
+  const boundingBox = await locator.boundingBox();
+  if (!boundingBox) throw invalidLogoElement('evidence_element_not_visible');
+  const inspection = await locator.evaluate((node): LogoElementInspection => {
+    const root = node as HTMLElement;
+    const descendants = [root, ...Array.from(root.querySelectorAll<HTMLElement>('*'))];
+    const images = descendants.filter(
+      (element) => element.tagName.toLowerCase() === 'img',
+    ) as HTMLImageElement[];
+    const tagName = root.tagName.toLowerCase();
+    const role = root.getAttribute('role') || (tagName === 'a' ? 'link' : null);
+    const visibleText = (root.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 512);
+    const identityEvidence = [
+      visibleText,
+      root.getAttribute('aria-label') || '',
+      root.getAttribute('title') || '',
+      ...images.map((image) => image.alt || ''),
+      ...descendants
+        .filter((element) => element.tagName.toLowerCase() === 'svg')
+        .map((element) => element.querySelector('title')?.textContent || ''),
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 1_024);
+    const contextEvidence = descendants
+      .flatMap((element) => [
+        element.id,
+        element.className && typeof element.className === 'string' ? element.className : '',
+        element.getAttribute('src') || '',
+        element.getAttribute('href') || '',
+      ])
+      .filter(Boolean)
+      .join(' ')
+      .slice(0, 4_096);
+    const classSuffix = [...root.classList]
+      .slice(0, 4)
+      .map((value) => `.${value}`)
+      .join('');
+    return {
+      stableDescription:
+        `${tagName}${root.id ? `#${root.id}` : ''}${classSuffix}${role ? ` role=${role}` : ''}`.slice(
+          0,
+          512,
+        ),
+      identityEvidence,
+      contextEvidence,
+      tagName,
+      role,
+      visibleText,
+      imageCount: images.length,
+      loadedImageCount: images.filter(
+        (image) => image.complete && image.naturalWidth > 0 && image.naturalHeight > 0,
+      ).length,
+      svgCount: descendants.filter((element) => element.tagName.toLowerCase() === 'svg').length,
+      backgroundImageCount: descendants.filter((element) => {
+        const background = getComputedStyle(element).backgroundImage;
+        return background !== 'none' && /url\(/i.test(background);
+      }).length,
+      canvasCount: descendants.filter((element) => element.tagName.toLowerCase() === 'canvas')
+        .length,
+      videoCount: descendants.filter((element) => element.tagName.toLowerCase() === 'video').length,
+      iframeCount: descendants.filter((element) => element.tagName.toLowerCase() === 'iframe')
+        .length,
+    };
+  });
+
+  const refusal = validateLogoElementEvidence(
+    request.expectedIdentity,
+    inspection,
+    boundingBox,
+    viewport,
+  );
+  if (refusal) throw invalidLogoElement(refusal);
+
+  const screenshotBytes = await locator.screenshot({
+    type: 'png',
+    animations: 'disabled',
+  });
+  if (screenshotBytes.length === 0 || screenshotBytes.length > MAX_ELEMENT_SCREENSHOT_BYTES) {
+    throw invalidLogoElement('evidence_element_screenshot_refused');
+  }
+  return {
+    selector: request.selector,
+    stableDescription: inspection.stableDescription,
+    expectedIdentity: request.expectedIdentity,
+    identityEvidence: inspection.identityEvidence,
+    tagName: inspection.tagName,
+    role: inspection.role,
+    visibleText: inspection.visibleText,
+    boundingBox,
+    viewport,
+    primitives: {
+      imageCount: inspection.imageCount,
+      svgCount: inspection.svgCount,
+      backgroundImageCount: inspection.backgroundImageCount,
+      canvasCount: inspection.canvasCount,
+      videoCount: inspection.videoCount,
+      iframeCount: inspection.iframeCount,
+    },
+    screenshot: {
+      mediaType: 'image/png',
+      encoding: 'base64',
+      data: screenshotBytes.toString('base64'),
+      sha256: evidenceSha256(screenshotBytes),
+      byteLength: screenshotBytes.length,
+    },
+  };
+}
+
+function invalidElementRequest(): EvidenceCaptureError {
+  return new EvidenceCaptureError(
+    400,
+    'invalid_evidence_request',
+    false,
+    'request',
+    'the element evidence request is invalid',
+  );
+}
+
+function invalidLogoElement(code: string): EvidenceCaptureError {
+  return new EvidenceCaptureError(
+    422,
+    code,
+    false,
+    'element',
+    'the selected element is not an admitted bounded logo composition',
+  );
 }
 
 async function admitBrowserRequest(request: BrowserRequest): Promise<string> {
