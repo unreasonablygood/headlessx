@@ -12,7 +12,18 @@ const EvidenceCaptureRequestSchema = z
       .string()
       .url()
       .max(8 * 1024),
-    kind: z.enum(['document', 'artifact']).default('document'),
+    kind: z.enum(['document', 'artifact', 'element']).default('document'),
+    element: z
+      .object({
+        selector: z
+          .string()
+          .min(2)
+          .max(129)
+          .regex(/^(?:#[A-Za-z_][A-Za-z0-9_.:-]*|\.[A-Za-z_][A-Za-z0-9_-]*)$/),
+        expectedIdentity: z.string().trim().min(2).max(160),
+      })
+      .strict()
+      .optional(),
     timeoutMs: z.number().int().min(2_000).max(55_000).optional(),
     maxBytes: z
       .number()
@@ -21,7 +32,16 @@ const EvidenceCaptureRequestSchema = z
       .max(16 * 1024 * 1024)
       .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.kind === 'element') !== Boolean(value.element)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'element evidence is required only for element captures',
+        path: ['element'],
+      });
+    }
+  });
 
 export class EvidenceCaptureController {
   public static metrics(_req: Request, res: Response): void {
