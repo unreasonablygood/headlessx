@@ -1,8 +1,8 @@
 # headlessx v2.x — throughput, knobs, and proxy options
 
-Operational tuning guide for the fleet HeadlessX v2.x host (Camoufox/Firefox,
-`ml-beelinks12-01:38473`). Validated 2026-07-10 against `gwun.com` with the
-value-blind load-test script at `scripts/loadtest.ts`. Target: sustain ~20–100
+Operational tuning guide for the production HeadlessX v2.x host
+(`ml-beelinks12-01:38473`). Validated 2026-07-10 against `gwun.com` with the
+bounded load-test script at `scripts/loadtest.ts`. Target: sustain ~20–100
 requests/min long-term and understand the tradeoffs.
 
 ## TL;DR
@@ -36,11 +36,11 @@ requests/min long-term and understand the tradeoffs.
 | `options.proxy` | `options.proxy` (string) | **Per-request proxy URL** (`http://user:pass@host:port` or `socks5://…`). Highest granularity — rotate per request. |
 | `options.waitForTimeout` | `options.waitForTimeout` (ms) | Extra fixed wait after selector. |
 
-### Server-level — runtime via `PATCH /api/config` (DB-backed, **no redeploy**, x-api-key gated)
+### Server-level — runtime via the authenticated operator API
 
-These are persisted in Postgres and read on each render. GET/PATCH via the
-`loadtest.ts config` / `loadtest.ts set --<flag> <value>` helpers (or any
-x-api-key client). Confirmed PATCH-able fields:
+These values persist in PostgreSQL and are read on each render. Change them
+through the dashboard or a separately authenticated operator session; the
+trusted-seat load-test client deliberately has no configuration authority.
 
 | Knob | Default | Effect |
 |---|---|---|
@@ -68,8 +68,8 @@ x-api-key client). Confirmed PATCH-able fields:
 ## Stress-test results (gwun.com, 2026-07-10)
 
 Beelink `ml-beelinks12-01`: 4 CPU, 16 GB RAM (~12 GB free with luna running).
-Load-test script: `scripts/loadtest.ts` (value-blind; resolves the API key via
-opd once, never prints it). Config restored to shipped defaults after testing.
+Load-test script: `scripts/loadtest.ts`; it sends no credential and relies on
+the trusted seat's Tailnet identity. Config was restored after the recorded run.
 
 | # | Config | Endpoint | Conc | Total | req/min | p50 (ms) | p95 (ms) | Errors | Notes |
 |---|---|---|---|---|---|---|---|---|---|
@@ -198,16 +198,13 @@ Provider comparison (5–50 GB/mo, ~50–200 req/min; pricing mid-2026, confirm 
 ## Reproducing / re-running
 
 ```bash
-# from a checkout of unreasonablygood/headlessx (opd must be warm on the runner)
-tsx scripts/loadtest.ts config                                    # GET current knobs
-tsx scripts/loadtest.ts set --camoufoxBlockImages true --camoufoxHumanize 0   # tune (runtime)
+# from a checkout on the m3 or ml-infra-02 trusted seat
 tsx scripts/loadtest.ts load --url https://gwun.com --concurrency 5 --total 15 --endpoint html-js
-tsx scripts/loadtest.ts set --camoufoxBlockImages false --camoufoxHumanize 2.5 # restore defaults
 ```
 
-The script resolves `HEADLESSX_API_KEY` (built-in default
-`op://m3_local/DASHBOARD_INTERNAL_API_KEY/credential`) via the opd daemon once,
-into memory only — never printed, never in argv; all output is scrubbed.
+The script is fixed to the Tailnet service address, sends no API key, and cannot
+read or mutate service configuration. Apply and restore tuning separately
+through the authenticated operator surface.
 
 ## Open follow-ups
 

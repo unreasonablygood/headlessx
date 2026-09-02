@@ -273,7 +273,11 @@ The YouTube operator is live only when `YT_ENGINE_URL` is configured.
 
 ## API Summary
 
-All non-health backend routes are protected with `x-api-key`.
+Non-health routes use `x-api-key` by default. The fixed public-page scrape and
+evidence routes additionally admit the two compiled trusted-seat Tailnet
+identities without a bearer; the WebDocument identity requires its dedicated
+service credential. Production secrets are root-owned files, not Coolify
+environment rows. See `docs/runbooks/headlessx.md`.
 
 Core backend surfaces:
 
