@@ -16,7 +16,9 @@ It is based on the operator-first route tree mounted in `apps/api/src/app.ts`.
 ## Auth And Transport
 
 - Public route: `GET /api/health`
-- Protected routes: every other `/api/*` endpoint requires `x-api-key`
+- Protected routes: every other `/api/*` endpoint requires `x-api-key`, except
+  the fixed public-page scrape/evidence paths when called by an admitted
+  trusted-seat Tailnet identity.
 - Internal dashboard traffic can use `DASHBOARD_INTERNAL_API_KEY`
 - SSE endpoints use `text/event-stream`
 

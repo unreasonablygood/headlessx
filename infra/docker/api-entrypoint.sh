@@ -3,13 +3,16 @@ set -eu
 
 cd /app/apps/api
 
-# Rebuild DATABASE_URL with a URL-encoded password. secret-bootstrap mints tokens as
-# base64, which can contain + / = and break the postgres URL parsing (prisma P1013
-# 'invalid port number'). python3 is in the image; this is robust for any token value.
-if [ -n "${POSTGRES_PASSWORD:-}" ]; then
-  PGPW_URL=$(python3 -c "import urllib.parse,os;print(urllib.parse.quote(os.environ['POSTGRES_PASSWORD'],safe=''))")
-  export DATABASE_URL="postgresql://${POSTGRES_USER:-postgres}:${PGPW_URL}@postgres:5432/${POSTGRES_DB:-headlessx}?schema=public"
-fi
+# Build DATABASE_URL from the fixed root-owned file. The password is never read
+# from a Coolify environment row and never appears in argv or output.
+POSTGRES_PASSWORD_FILE=/run/secrets/headlessx-postgres-password
+[ -r "${POSTGRES_PASSWORD_FILE}" ] || {
+  echo "HeadlessX PostgreSQL credential file is unavailable." >&2
+  exit 1
+}
+PGPW_URL=$(python3 -c "import pathlib,urllib.parse;print(urllib.parse.quote(pathlib.Path('/run/secrets/headlessx-postgres-password').read_text(),safe=''))")
+export DATABASE_URL="postgresql://${POSTGRES_USER:-postgres}:${PGPW_URL}@postgres:5432/${POSTGRES_DB:-headlessx}?schema=public"
+unset PGPW_URL
 
 MAX_ATTEMPTS="${PRISMA_MIGRATE_MAX_ATTEMPTS:-10}"
 ATTEMPT=1
