@@ -1,5 +1,5 @@
 # HeadlessX v2.x — production API-only Compose for Coolify.
-# Lives at the repository root (docker_compose_location: /docker-compose.coolify.yml) so
+# Lives at the repository root (docker_compose_location: /docker-compose.fleet.yml) so
 # build `context: .` resolves to the repo root under Coolify's --project-directory.
 #
 # Derived from infra/docker/docker-compose.yml: profiles removed (Coolify doesn't

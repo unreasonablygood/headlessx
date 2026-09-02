@@ -9,8 +9,8 @@ fixed Tailnet listener `100.83.166.127:38473`.
 | | |
 |---|---|
 | Repository | `unreasonablygood/headlessx` |
-| Branch | `master` |
-| Compose | `/docker-compose.coolify.yml` |
+| Branch | `main` |
+| Compose | `/docker-compose.fleet.yml` |
 | Coolify application | `bs00lje88r6kest212hp8i6b` |
 | Server | `ml-beelinks12-01` |
 | Published API | `100.83.166.127:38473` |
