@@ -23,7 +23,7 @@ import {
   validateRenderedDocumentFallback,
 } from './EvidenceNavigation';
 
-const SCHEMA_VERSION = 'fleet.headlessx-evidence/v1';
+const SCHEMA_VERSION = 'headlessx.evidence/v1';
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
 const MIN_MAX_BYTES = 64 * 1024;
 const HARD_MAX_BYTES = 16 * 1024 * 1024;
