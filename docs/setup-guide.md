@@ -7,10 +7,14 @@ This document explains the three supported HeadlessX setup modes: `developer`, `
 Use the CLI for all three modes:
 
 1. `developer` for contributors who want the repo locally and only need Docker for infrastructure where it helps
-2. `self-host` for a full local or VPS Docker stack on HeadlessX's rare default ports
-3. `production` for the Docker app stack plus the Caddy/domain layer
+2. `self-host` for a full Docker stack whose host ports stay on loopback by
+   default
+3. `production` for that loopback-bound app stack plus the public Caddy/domain
+   layer
 
-HeadlessX intentionally defaults to uncommon localhost ports to avoid collisions with typical `3000` and `8000` stacks.
+HeadlessX intentionally defaults to uncommon host ports on `127.0.0.1`. Caddy
+uses the internal Docker network in production, so public domains do not
+require exposing core host ports.
 
 ## System Requirements
 
@@ -28,9 +32,9 @@ HeadlessX intentionally defaults to uncommon localhost ports to avoid collisions
 
 | Mode | Required tools |
 | --- | --- |
-| Developer | Git, Docker, Node.js 22+, pnpm 10.32.1+, Python/uv, Go |
-| Self-host | Git, Docker, Docker Compose v2 |
-| Production | Linux server recommended, Git, Docker, Docker Compose v2, DNS control for your domains |
+| Developer | Git, Node.js 22+, pnpm 10.32.1+, Python/uv, Go, and reachable PostgreSQL and Redis; Docker is optional infrastructure |
+| Self-host | Git, Docker Engine, Docker Compose v2 |
+| Production | Linux server recommended, Git, Docker Engine, Docker Compose v2, DNS control for your domains |
 
 ### Practical sizing guidance
 
@@ -103,14 +107,23 @@ headlessx restart
 headlessx doctor
 ```
 
+Production init asks for a dashboard password through a masked prompt, confirms
+it, and gives only the plaintext bytes on stdin to the fixed Caddy password
+hasher. It stores a bcrypt verifier, never the plaintext. Unattended
+automation must supply a precomputed verifier with
+`--dashboard-password-hash`; no plaintext-password flag exists.
+
 The CLI uses `~/.headlessx` as the default workspace root.
 
-- cloned repo: `~/.headlessx/repo`
-- self-host env: `~/.headlessx/repo/infra/docker/.env`
-- production env: `~/.headlessx/repo/infra/domain-setup/.env`
-- production Caddy config: `~/.headlessx/repo/infra/domain-setup/Caddyfile`
+- cloned owner fork: `~/.headlessx/repo`
+- fixed Compose credential sources: `~/.headlessx/repo/infra/docker/secrets`
+- self-host non-secret config: `~/.headlessx/repo/infra/docker/.env`
+- production domain config and bcrypt verifier:
+  `~/.headlessx/repo/infra/domain-setup/.env`
+- generated production Caddy config:
+  `~/.headlessx/repo/infra/domain-setup/Caddyfile`
 - after `headlessx init` or `headlessx start`, run `headlessx status` and `headlessx doctor`
-- use `headlessx stop` to tear down the Docker stack started by the CLI
+- use `headlessx stop` to stop the Docker services started by the CLI
 
 To update an existing CLI-managed install:
 
@@ -118,18 +131,39 @@ To update an existing CLI-managed install:
 headlessx init update
 headlessx restart
 headlessx logs --tail 200 --no-follow
-headlessx logs caddy --tail 100 --no-follow
 headlessx status
 headlessx doctor
 ```
 
-`headlessx init update` keeps the saved mode, reconciles missing env keys for that mode, updates `~/.headlessx/repo`, and pulls `main` by default unless you pass `--branch`.
-For `self-host` and `production`, `headlessx restart` rebuilds Docker images before starting the stack again.
+Inspect Caddy only in `production` mode:
 
-Important:
+```bash
+headlessx logs caddy --tail 100 --no-follow
+```
 
-- update now resyncs missing env keys for the saved mode instead of leaving older workspaces partially configured
-- that includes values such as `YT_ENGINE_URL`, `INTERNAL_API_URL`, and `DASHBOARD_INTERNAL_API_KEY`
+`headlessx init update` keeps the saved mode, reconciles missing configuration,
+migrates legacy Compose credentials into the fixed private files, refreshes
+the production Caddy policy, and pulls `master` by default unless you pass
+`--branch`. Existing production installs without a dashboard verifier prompt
+for one interactively and fail closed in unattended use.
+
+For `self-host` and `production`, `headlessx restart` rebuilds Docker images
+before starting the stack again. An incomplete existing app credential set is
+refused instead of implicitly rotated.
+
+### Production dashboard access
+
+The production dashboard domain is an administrative surface: its server proxy
+uses the fixed dashboard-internal API credential and includes API-key and
+configuration management. Caddy therefore requires a separate Basic Auth
+username and password before any browser request reaches the web app. It
+removes the browser's `Authorization` header before proxying. The API domain
+does not use this password; ordinary non-health API routes still require
+`x-api-key`.
+
+Production core host ports must remain bound to `127.0.0.1`. Caddy reaches
+`web:3000` and `api:8000` over the internal Docker network, preserving remote
+HTTPS access without a direct dashboard bypass.
 
 ## Google AI Search Cookie Bootstrap
 
@@ -157,7 +191,8 @@ Until the cookie bootstrap has been completed once:
 
 ## AI Models Setup
 
-The API CAPTCHA solver needs local model files under [apps/api/models](/home/saifyxpro/CODE/Crawl/HeadlessX/apps/api/models).
+The API CAPTCHA solver needs local model files under
+[`apps/api/models`](../apps/api/models).
 
 If you see errors like:
 
@@ -323,7 +358,7 @@ Start Redis with Docker:
 ```bash
 docker run -d \
   --name headlessx-redis \
-  -p 36379:6379 \
+  -p 127.0.0.1:36379:6379 \
   redis:7-alpine
 ```
 
@@ -365,7 +400,7 @@ docker run -d \
   -e POSTGRES_USER=postgres \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=headlessx \
-  -p 35432:5432 \
+  -p 127.0.0.1:35432:5432 \
   postgres:15-alpine
 ```
 
@@ -374,7 +409,7 @@ Start Redis:
 ```bash
 docker run -d \
   --name headlessx-redis \
-  -p 36379:6379 \
+  -p 127.0.0.1:36379:6379 \
   redis:7-alpine
 ```
 
@@ -414,44 +449,66 @@ pnpm markdown:dev
 pnpm yt-engine:dev
 ```
 
-### 3. Docker for the Core Stack
+### 3. Docker for the core stack
 
-This is the recommended operational direction for the workspace because it keeps infrastructure and runtime consistent.
+This is the supported `self-host` runtime and the core of CLI-managed
+`production`. The Compose file covers PostgreSQL, Redis, HTML-to-Markdown,
+yt-engine, API, worker, and web.
 
-Current compose file covers:
+Prefer the CLI because it creates the complete private credential set without
+printing values:
 
-- postgres
-- redis
-- html-to-md
-- yt-engine
-- api
-- worker
-- web
+```bash
+headlessx init --mode self-host
+```
 
-Use the Docker env file:
+The generated Compose configuration binds every published host port to
+`127.0.0.1`. For a self-host install already protected by a trusted private
+network, firewall, or authenticated reverse proxy, `--host-bind <ipv4>` is an
+explicit opt-in. The CLI warns and asks for confirmation because this also
+publishes the unauthenticated dashboard, PostgreSQL, Redis, and sidecars.
+Production rejects a non-loopback core bind.
+
+For a manual repository checkout, copy only the non-secret configuration:
 
 ```bash
 cp infra/docker/.env.example infra/docker/.env
 ```
 
-Fill in at least:
-
-- `DASHBOARD_INTERNAL_API_KEY`
-- `CREDENTIAL_ENCRYPTION_KEY`
-
-Then run:
+Create the four fixed source files without a trailing newline:
 
 ```bash
-cd infra/docker
-docker compose --profile all up --build -d
+(
+  umask 077
+  mkdir -p infra/docker/secrets
+  chmod 0700 infra/docker/secrets
+  for name in postgres-password dashboard-internal-api-key credential-encryption-key evidence-api-key; do
+    openssl rand -hex 32 | tr -d '\n' > "infra/docker/secrets/${name}"
+    chmod 0400 "infra/docker/secrets/${name}"
+  done
+)
 ```
 
-Important note:
+Then start from the repository root:
 
-- use `--profile all`
-- the current compose file is profile-gated in a way that makes partial profile runs like `--profile api` or `--profile queue` invalid because of `depends_on` relationships
+```bash
+docker compose --project-directory infra/docker \
+  --file infra/docker/docker-compose.yml \
+  --profile all up --build -d
+```
 
-The Docker stack now includes `yt-engine`, so `docker compose --profile all up --build -d` starts the full app runtime, including YouTube support.
+The one-shot `credential-bootstrap` service copies only the files each service
+needs into root-owned `0400` runtime volumes before PostgreSQL, API, worker, or
+web starts. API and worker build `DATABASE_URL` from the mounted database
+password. The four fixed runtime credentials never fall back to values in
+`.env` in production.
+
+The host mappings are loopback-only unless a self-host operator explicitly
+sets `HEADLESSX_HOST_BIND` to another IPv4 address. Container-to-container
+traffic is unaffected.
+
+Always use `--profile all`; the dependency graph does not support partial
+`api` or `queue` profile startup.
 
 ## Ports
 
@@ -467,16 +524,25 @@ Default ports in this repo:
 | HTML-to-Markdown container port | `8080` |
 | yt-engine | `38090` |
 
-## Environment Files
+All host-port entries in the table are bound to `127.0.0.1` by default.
 
-Use the files this way:
+## Configuration and credential files
 
-- root `.env`: main local runtime settings for `pnpm`, `nx`, and `mise`
-- `infra/docker/.env`: Docker Compose settings
-- `apps/web/.env.local`: web-only local overrides if needed
-- `apps/api/.env.local`: api-only local overrides if needed
+- root `.env`: non-production settings and credentials for local `pnpm`, Nx,
+  and mise processes
+- `infra/docker/.env`: non-secret Docker Compose settings
+- `infra/docker/secrets`: fixed private sources for `self-host` and CLI-managed
+  `production`
+- `/etc/headlessx/credentials/current`: root-owned `0400` sources used only by
+  the owner API-only production deployment in `docker-compose.fleet.yml`
+- `infra/domain-setup/.env`: production domains, Caddy settings, and the
+  dashboard bcrypt verifier; the CLI restricts this file to the current user
+- `apps/web/.env.local` and `apps/api/.env.local`: optional non-production
+  app-only overrides
 
-If you are doing normal local development, keep the main source of truth in root `.env`.
+The owner production path is documented in `runbooks/headlessx.md`. It mounts
+the fixed files directly and does not use Coolify environment rows as a
+credential source.
 
 ## Website Crawl Checklist
 

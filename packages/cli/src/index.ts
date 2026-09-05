@@ -97,9 +97,12 @@ program
   .option('--branch <name>', 'Git branch to clone or update')
   .option('--yes', 'Accept recommended defaults and skip confirmation prompts')
   .option('--no-start', 'Prepare the workspace but do not start services')
+  .option('--host-bind <address>', 'Self-host IPv4 bind address (default: 127.0.0.1)')
   .option('--api-domain <domain>', 'Production API domain')
   .option('--web-domain <domain>', 'Production dashboard domain')
   .option('--caddy-email <email>', 'Production Caddy email')
+  .option('--dashboard-user <username>', 'Production dashboard Basic Auth username')
+  .option('--dashboard-password-hash <bcrypt>', 'Precomputed production dashboard bcrypt verifier')
   .action((action, options) => handleInitCommand({ ...options, action }));
 
 program

@@ -45,13 +45,14 @@ pnpm add -g @headlessx-cli/core
 headlessx --help
 ```
 
-### CLI Requirements
+### CLI requirements
 
 - macOS, Linux, or Windows 11 with WSL2
 - Node.js 18+ for the published CLI itself
 - Git for `headlessx init`
-- Docker for `self-host` and `production` modes
-- Node.js 22+ and pnpm 10.32.1+ if you use `developer` mode, because the cloned HeadlessX repo uses those versions
+- Docker Engine with Compose v2 for `self-host` and `production`
+- Node.js 22+, pnpm 10.32.1+, and reachable PostgreSQL and Redis services for
+  `developer`; Docker is optional when those services are provided another way
 
 If you need the repo-pinned pnpm release:
 
@@ -71,8 +72,10 @@ headlessx init
 Default behavior:
 
 - installs into `~/.headlessx`
-- prefers branch `main`
-- uses `.env` files only
+- clones `unreasonablygood/headlessx` and prefers branch `master`
+- keeps non-secret core mode configuration in `.env` files
+- keeps Compose app credential values in fixed private files
+- keeps host-published Compose ports on `127.0.0.1` by default
 - keeps the existing operator/API commands intact
 - uses guided modern prompts for setup and login when the terminal is interactive
 
@@ -93,17 +96,43 @@ headlessx restart
 headlessx doctor
 ```
 
-## Workspace Layout
+`self-host` accepts `--host-bind <ipv4>` as an explicit non-loopback opt-in.
+The CLI warns and asks for confirmation because every host-published service,
+including the unauthenticated dashboard, PostgreSQL, and Redis, moves beyond
+loopback. CLI-managed production rejects that override: its public traffic
+enters through Caddy on the shared Docker network.
+
+Production init masked-prompts for a separate dashboard password and persists
+only its bcrypt verifier. Unattended automation can use
+`--dashboard-user <username>` and `--dashboard-password-hash <bcrypt>`. There
+is no plaintext-password flag.
+
+## Workspace layout
 
 By default, the bootstrap flow uses:
 
 - workspace root: `~/.headlessx`
 - cloned repo: `~/.headlessx/repo`
+- fixed Compose credential sources: `~/.headlessx/repo/infra/docker/secrets`
 - runtime metadata directory: `~/.headlessx/runtime/`
 - last start state: `~/.headlessx/runtime/last-start.json`
-- self-host env: `~/.headlessx/repo/infra/docker/.env`
-- production env: `~/.headlessx/repo/infra/domain-setup/.env`
-- production Caddy config: `~/.headlessx/repo/infra/domain-setup/Caddyfile`
+- self-host non-secret config: `~/.headlessx/repo/infra/docker/.env`
+- production domain config and bcrypt verifier: `~/.headlessx/repo/infra/domain-setup/.env`
+- generated protected Caddy config: `~/.headlessx/repo/infra/domain-setup/Caddyfile`
+
+### Mode-specific credential sources
+
+- `developer` reads dashboard and encryption credentials from the root `.env`
+  because its API and worker processes are non-production.
+- `self-host` and CLI-managed `production` create private source files under
+  `~/.headlessx/repo/infra/docker/secrets`. Compose copies only the required
+  files into root-owned `0400` runtime volumes before starting each service.
+- The owner API-only deployment mounts its root-owned files directly from
+  `/etc/headlessx/credentials/current`; see `docs/runbooks/headlessx.md`.
+
+The four fixed app runtime credentials never fall back to values from `.env`
+or provider environment rows in production. The separate Caddy verifier is a
+one-way hash, not an app credential or API key.
 
 Recommended verification after `headlessx init` or `headlessx start`:
 
@@ -126,12 +155,16 @@ Default behavior:
 
 - reuses the saved setup mode
 - updates the repo under `~/.headlessx/repo`
-- reconciles missing env keys for the saved mode
-- pulls `main` by default
+- reconciles missing configuration for the saved mode
+- migrates legacy Compose credentials into `~/.headlessx/repo/infra/docker/secrets`
+- pulls `master` by default
 - uses `--branch <name>` only when you explicitly want another branch
-- keeps the existing env files and generated domain config in place
+- refreshes the generated production Caddy policy
 
-That env reconciliation now covers missing values such as `YT_ENGINE_URL`, `INTERNAL_API_URL`, and `DASHBOARD_INTERNAL_API_KEY`.
+An incomplete existing app credential set is refused rather than regenerated.
+Existing production installs without a dashboard verifier prompt for one
+interactively; unattended updates fail closed. Database and encryption
+credentials must not rotate implicitly.
 
 Recommended update flow:
 
@@ -147,7 +180,14 @@ For `self-host` and `production`, `headlessx restart` rebuilds Docker images bef
 
 ## Authentication
 
-The `headlessx` command uses HeadlessX API keys only.
+The `headlessx` operator command uses HeadlessX API keys only. Production
+dashboard Basic Auth is a separate browser-to-Caddy boundary; Caddy strips the
+`Authorization` header before proxying to the web app. The public API domain
+keeps ordinary `x-api-key` admission.
+
+This CLI login contract covers ordinary API routes on user-managed
+installations. It does not apply to the owner-installed fixed Tailnet client,
+which uses fixed source-identity admission and sends no reusable bearer.
 
 Supported config sources, highest priority first:
 
@@ -254,10 +294,13 @@ headlessx doctor -o doctor.json --json --pretty
 
 `doctor` checks:
 
-- Git, Docker, Node.js, and pnpm, with pnpm treated as optional outside `developer` mode
-- bootstrap env files
+- required tools for the saved mode (`git`, Node.js, and pnpm for `developer`;
+  `git` and Docker for Compose-backed modes)
+- bootstrap configuration files
 - model file presence
 - local API and web reachability with loopback fallback for `localhost`
+- the production web origin's expected `401` Basic Auth challenge as a healthy,
+  protected reachability result
 
 ### Logs
 
@@ -265,7 +308,7 @@ headlessx doctor -o doctor.json --json --pretty
 headlessx logs
 headlessx logs api
 headlessx logs web --tail 100 --no-follow
-headlessx logs caddy --tail 100 --no-follow
+headlessx logs caddy --tail 100 --no-follow  # production only
 ```
 
 `logs` tails the saved runtime:
@@ -421,16 +464,17 @@ headlessx tavily search "distributed crawlers" -o tavily.json --pretty
 headlessx scrape https://example.com --type content -o content.md
 ```
 
-## Publishing
+## Maintainer publishing
 
-From the package directory:
+Publication is an owner-authorized maintainer action, not part of ordinary CLI
+operation. Only when the package owner explicitly requests a release, run the
+reviewed package scripts from the repository root with npm authentication
+already established:
 
 ```bash
-cd /home/saifyxpro/CODE/Crawl/HeadlessX/packages/cli
-npm login
-pnpm type-check
-pnpm build
-npm publish --access public
+pnpm --filter @headlessx-cli/core type-check
+pnpm --filter @headlessx-cli/core build
+pnpm --dir packages/cli publish-prod
 ```
 
 ## Apt And Snap

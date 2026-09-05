@@ -21,6 +21,9 @@ RUN pnpm install --frozen-lockfile
 WORKDIR /app
 RUN pnpm exec nx run headlessx-web:build
 
+# Production credential readers require the fixed root-owned 0400 mount.
+USER root
+
 # Start the Web app
 WORKDIR /app/apps/web
 CMD ["pnpm", "start"]

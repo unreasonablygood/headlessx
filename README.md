@@ -128,13 +128,14 @@ Important operator setup notes:
 
 ## Agent Skills
 
-You can add the HeadlessX CLI skill to AI coding agents such as Cursor, Claude Code, Warp, Windsurf, OpenCode, OpenClaw, Antigravity, and similar tools that support the `skills` installer flow.
+Install the owner-fork CLI skill in agents that support the `skills` installer:
 
 ```bash
-npx skills add https://github.com/saifyxpro/HeadlessX --skill cli
+npx skills add https://github.com/unreasonablygood/headlessx --skill cli
 ```
 
-This installs the HeadlessX CLI skill from this repository so the agent can use the published `headlessx` command and follow the packaged usage guidance.
+The skill covers the published user-managed CLI. It deliberately distinguishes
+that API-key workflow from the owner-installed fixed Tailnet client.
 
 ## UI Screenshots
 
@@ -185,16 +186,16 @@ This installs the HeadlessX CLI skill from this repository so the agent can use 
 | Disk | 10 GB free | 20+ GB SSD |
 | Network | outbound internet for installs, browser downloads, and APIs | stable broadband |
 
-### Runtime Dependencies
+### Runtime dependencies
 
-- Node.js 22+
-- pnpm 10.32.1+
+- Node.js 22+ and pnpm 10.32.1+ for repository development
 - Git
-- Docker + Compose v2 for self-host or production mode
-- PostgreSQL
-- Redis
+- PostgreSQL and Redis reachable for developer mode
 - Python/uv for `yt-engine`
 - Go for the HTML-to-Markdown sidecar
+- Docker Engine with Compose v2 for `self-host` and `production`; Docker is
+  optional for developer mode when PostgreSQL and Redis are provided another
+  way
 
 If your machine does not already use the pinned pnpm release, align it with:
 
@@ -220,11 +221,16 @@ headlessx status
 headlessx doctor
 ```
 
-The CLI bootstraps HeadlessX into `~/.headlessx` by default and supports three setup modes:
+The CLI bootstraps the owner fork into `~/.headlessx` by default and supports
+three setup modes:
 
-- `developer`: clone the repo, keep app services local, and use Docker only where needed for infrastructure
-- `self-host`: run the full HeadlessX stack on rare localhost ports with Docker
-- `production`: run the Docker app stack plus the Caddy/domain layer for `dashboard.yourdomain.com` and `api.yourdomain.com`
+- `developer`: run app processes locally with non-production credentials in the
+  root `.env`; Docker is optional infrastructure
+- `self-host`: run the full stack with Docker and fixed private credential
+  sources under `~/.headlessx/repo/infra/docker/secrets`
+- `production`: run the same credential-file-backed app stack plus Caddy for
+  `dashboard.yourdomain.com` and `api.yourdomain.com`; Caddy protects the
+  dashboard with a separate operator username and password
 
 Useful examples:
 
@@ -233,18 +239,35 @@ headlessx init --mode developer
 headlessx init --mode self-host
 headlessx init --mode production --api-domain api.example.com --web-domain dashboard.example.com --caddy-email ops@example.com
 headlessx init update
-headlessx init update --branch develop
 headlessx start
 headlessx logs
 headlessx restart
 headlessx stop
 ```
 
-For existing VPS or Docker installs, use `headlessx init update` to pull the latest repo state into `~/.headlessx/repo`, reconcile missing env keys for the saved mode, then run `headlessx restart`.
-For `self-host` and `production`, `headlessx restart` rebuilds Docker images before bringing the stack back up.
+Production init masked-prompts for the dashboard password and stores only a
+Caddy bcrypt verifier. For unattended setup, supply a precomputed verifier
+with `--dashboard-password-hash`; there is deliberately no plaintext-password
+flag.
 
-HeadlessX intentionally uses uncommon localhost defaults to avoid conflicts with other tools:
-`web=34872`, `api=38473`, `postgres=35432`, `redis=36379`, `html-to-md=38081`, `yt-engine=38090`.
+For existing CLI-managed installs, `headlessx init update` pulls the configured
+branch into `~/.headlessx/repo`, reconciles non-secret mode configuration,
+migrates legacy Compose credentials into fixed private files, and refreshes the
+generated Caddy policy. It never prints credential values, writes the
+dashboard password, or writes fixed app credentials back to `.env`. An
+incomplete app credential set or invalid dashboard verifier is refused; a
+missing verifier prompts interactively and fails closed in unattended use.
+
+For `self-host` and `production`, `headlessx restart` rebuilds Docker images
+before bringing the stack back up.
+
+Compose binds its uncommon host ports to `127.0.0.1` by default:
+`web=34872`, `api=38473`, `postgres=35432`, `redis=36379`,
+`html-to-md=38081`, and `yt-engine=38090`. Self-host users can explicitly set a
+non-loopback IPv4 address with `--host-bind`, but the CLI warns because that
+also publishes the unauthenticated dashboard and data services. Production
+core ports stay loopback-only; public web/API traffic reaches them through the
+shared Caddy Docker network.
 
 For deeper setup details, direct repo development, env files, Docker internals, and MCP/client notes, see [docs/setup-guide.md](docs/setup-guide.md).
 
@@ -271,13 +294,26 @@ The YouTube operator is live only when `YT_ENGINE_URL` is configured.
 - CLI `self-host` and `production` init flows write it automatically
 - custom local setups must point `YT_ENGINE_URL` at a reachable `yt-engine` instance
 
-## API Summary
+## API summary
 
-Non-health routes use `x-api-key` by default. The fixed public-page scrape and
-evidence routes additionally admit the two compiled trusted-seat Tailnet
-identities without a bearer; the WebDocument identity requires its dedicated
-service credential. Production secrets are root-owned files, not Coolify
-environment rows. See `docs/runbooks/headlessx.md`.
+Ordinary non-health routes use `x-api-key` with a user-created key or the
+dashboard's internal key. The fixed public-page scrape and evidence routes
+additionally admit the two compiled trusted-seat Tailnet identities without a
+bearer; the WebDocument identity requires its dedicated fixed evidence
+credential. This exception belongs to the owner-operated direct service, not
+published CLI login.
+
+CLI-managed Compose copies the four fixed credential sources into root-owned
+`0400` runtime volumes. The owner API-only production path instead mounts
+root-owned files from `/etc/headlessx/credentials/current` through
+`docker-compose.fleet.yml`. Those credentials never fall back to values in
+`.env` or Coolify environment rows. See
+[the production runbook](docs/runbooks/headlessx.md).
+
+On CLI-managed production hosts, the public dashboard domain first requires
+Caddy Basic Auth. Caddy removes that `Authorization` header before proxying to
+the web app. The public API domain does not use the dashboard password: its
+non-health routes keep the ordinary `x-api-key` contract.
 
 Core backend surfaces:
 
@@ -360,10 +396,15 @@ infra/docker/
 
 ## Notes
 
-- The dashboard uses the internal dashboard key for server-side internal requests
-- MCP uses normal user-created API keys, not the dashboard internal key
-- Queue-backed features return degraded/unavailable behavior when Redis is missing
-- Docker support now covers the full runtime stack, including yt-engine
+- The dashboard uses its internal API key only for server-side requests;
+  production reads the fixed mounted file rather than an environment
+  credential.
+- Public production dashboard browsers first pass the separate Caddy Basic
+  Auth boundary; Caddy never forwards that `Authorization` header upstream.
+- MCP, the public API domain, and the published CLI use normal user-created API
+  keys, never the dashboard internal or fixed evidence key.
+- Queue-backed features return degraded/unavailable behavior when Redis is missing.
+- Docker support covers the full runtime stack, including yt-engine.
 
 ## Contributing
 

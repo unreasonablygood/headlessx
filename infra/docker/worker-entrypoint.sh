@@ -3,6 +3,9 @@ set -eu
 
 cd /app/apps/api
 
+# Keep worker database bootstrap identical to the API image entrypoint.
+. /usr/local/bin/headlessx-load-postgres-credential
+
 MAX_ATTEMPTS="${PRISMA_MIGRATE_MAX_ATTEMPTS:-10}"
 ATTEMPT=1
 

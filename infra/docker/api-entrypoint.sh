@@ -3,16 +3,9 @@ set -eu
 
 cd /app/apps/api
 
-# Build DATABASE_URL from the fixed root-owned file. The password is never read
-# from a Coolify environment row and never appears in argv or output.
-POSTGRES_PASSWORD_FILE=/run/secrets/headlessx-postgres-password
-[ -r "${POSTGRES_PASSWORD_FILE}" ] || {
-  echo "HeadlessX PostgreSQL credential file is unavailable." >&2
-  exit 1
-}
-PGPW_URL=$(python3 -c "import pathlib,urllib.parse;print(urllib.parse.quote(pathlib.Path('/run/secrets/headlessx-postgres-password').read_text(),safe=''))")
-export DATABASE_URL="postgresql://${POSTGRES_USER:-postgres}:${PGPW_URL}@postgres:5432/${POSTGRES_DB:-headlessx}?schema=public"
-unset PGPW_URL
+# Both supported production Compose paths mount the database credential at the
+# same fixed location. The loader never accepts an environment-value fallback.
+. /usr/local/bin/headlessx-load-postgres-credential
 
 MAX_ATTEMPTS="${PRISMA_MIGRATE_MAX_ATTEMPTS:-10}"
 ATTEMPT=1

@@ -13,8 +13,23 @@ headlessx init update --branch develop
 headlessx init --branch develop
 ```
 
-Interactive `headlessx init` now uses guided modern prompts for mode selection, required values, and confirmations.
-`headlessx init update` reuses the saved mode, fills any missing env keys needed by that mode, and updates the repo.
+Production init masked-prompts for and confirms the dashboard Basic Auth
+password. For unattended setup, use `--dashboard-user <username>` and a
+precomputed `--dashboard-password-hash <bcrypt>`; there is no plaintext
+password flag.
+
+Compose host ports default to `127.0.0.1`. `--host-bind <ipv4>` is an explicit
+self-host-only remote bind and triggers an exposure warning. Production core
+ports remain loopback-only because Caddy reaches the services over their
+Docker network.
+
+Interactive `headlessx init` uses guided prompts for mode selection, required
+values, the masked production dashboard password, and confirmations.
+`headlessx init update` reuses the saved mode, fills missing configuration,
+refreshes the protected Caddy policy, and updates the repo. Compose-backed
+modes keep fixed app credentials in private files under
+`~/.headlessx/repo/infra/docker/secrets`; the core `.env` contains no fixed
+credential values.
 
 Runtime:
 
@@ -23,7 +38,7 @@ headlessx start
 headlessx logs
 headlessx logs api
 headlessx logs web --tail 100 --no-follow
-headlessx logs caddy --tail 100 --no-follow
+headlessx logs caddy --tail 100 --no-follow  # production mode only
 headlessx stop
 headlessx restart
 headlessx status

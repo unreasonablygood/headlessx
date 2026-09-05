@@ -1,10 +1,17 @@
+# headlessx-dashboard-auth-v1
+
 {
 	email {$CADDY_EMAIL}
 }
 
 {$HEADLESSX_WEB_DOMAIN} {
 	encode zstd gzip
-	reverse_proxy {$HEADLESSX_WEB_UPSTREAM}
+	basic_auth {
+		{$HEADLESSX_DASHBOARD_USER} {$HEADLESSX_DASHBOARD_PASSWORD_HASH}
+	}
+	reverse_proxy {$HEADLESSX_WEB_UPSTREAM} {
+		header_up -Authorization
+	}
 }
 
 {$HEADLESSX_API_DOMAIN} {
