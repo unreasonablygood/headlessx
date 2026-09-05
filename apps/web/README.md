@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# HeadlessX Dashboard
 
-## Getting Started
+`apps/web` is the Next.js dashboard for HeadlessX operators, API keys, jobs,
+logs, proxies, and runtime configuration. It is part of the pnpm/Nx monorepo
+and is not a standalone create-next-app or Vercel deployment.
 
-First, run the development server:
+## Run locally
+
+From the repository root, configure the root `.env` and start the complete
+development runtime:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+cp .env.example .env
+pnpm install
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:34872](http://localhost:34872) with your browser to see the result.
+To run only the dashboard while a compatible API is already available:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+pnpm --filter headlessx-web dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The default dashboard URL is `http://localhost:34872`.
 
-## Learn More
+## Internal API authentication
 
-To learn more about Next.js, take a look at the following resources:
+Browser requests use the server-side proxy under `src/app/api/[...path]`; the
+dashboard credential must never be exposed to client components.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- Development reads `DASHBOARD_INTERNAL_API_KEY` from the non-production
+  environment.
+- Production reads the fixed root-owned `0400` file at
+  `/run/secrets/headlessx-dashboard-internal-api-key` and does not fall back to
+  an environment credential.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The supported self-host and production Compose flow mounts that file. See
+`../../docs/setup-guide.md` for the mode-specific bootstrap contract.
 
-## Deploy on Vercel
+## Browser admission
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The dashboard has no in-app account/session layer. Self-host Compose therefore
+binds its host port to `127.0.0.1` by default. CLI-managed production exposes
+the dashboard only through the Caddy vhost, which requires a separate Basic
+Auth username/password and strips `Authorization` before forwarding.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Do not publish the production web host port directly: browser requests would
+otherwise reach administrative proxy routes without the Caddy boundary. The
+public API domain is separate and keeps its normal `x-api-key` contract.
+
+## Source map
+
+- `src/app/` — App Router pages and server-side API proxy
+- `src/components/playground/` — operator workbenches and shared UI
+- `src/lib/playgroundAvailability.ts` — server-side operator availability
+- `src/app/api/[...path]/route.ts` — authenticated backend forwarding
+
+Use Space Grotesk and JetBrains Mono through `src/app/layout.tsx`; do not add
+the removed create-next-app Geist setup.

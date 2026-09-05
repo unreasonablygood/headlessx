@@ -4,27 +4,40 @@ import packageJson from '../../package.json';
 import { getApiKey } from '../utils/config';
 import { writeStructured, writeText } from '../utils/output';
 import {
+  assertComposeSecretFiles,
+  assertProductionDashboardAccess,
+  assertProductionHostBind,
   checkCommand,
   checkHttpHealth,
   confirm,
+  DEFAULT_DASHBOARD_USER,
+  DEFAULT_HOST_BIND,
   developerPortDefaults,
+  ensureComposeSecretFiles,
   ensureFileFromExample,
-  generateSecret,
+  hashDashboardPassword,
   hostPortDefaults,
+  isLoopbackHostBind,
+  normalizeHostBindAddress,
   promptMode,
   promptRequired,
   readEnvFile,
+  removeEnvValues,
+  requiredCommandsForMode,
   resolveDeveloperPorts,
   resolveHostPorts,
   resolveSecret,
   runCommand,
   runInteractiveCommand,
   spawnDetachedProcess,
+  syncProductionCaddyfile,
   upsertEnvValues,
+  validateDashboardPassword,
   killDetachedProcess,
 } from '../utils/lifecycle';
 import {
   canUseModernPrompts,
+  promptPassword,
   showInfo,
   showIntro,
   showNote,
@@ -56,6 +69,9 @@ interface InitOptions {
   apiDomain?: string;
   webDomain?: string;
   caddyEmail?: string;
+  dashboardUser?: string;
+  dashboardPasswordHash?: string;
+  hostBind?: string;
 }
 
 interface StartOptions {
@@ -183,12 +199,10 @@ function requireChecks(checks: Array<{ name: string; ok: boolean; detail: string
 }
 
 function detectPrerequisites(mode: SetupMode): Array<{ name: string; ok: boolean; detail: string }> {
-  const checks = [checkCommand('git'), checkCommand('docker')];
-
+  const checks = requiredCommandsForMode(mode).map((name) =>
+    checkCommand(name, name === 'docker' ? ['compose', 'version'] : ['--version'])
+  );
   if (mode === 'developer') {
-    checks.push(checkCommand('node', ['--version']));
-    checks.push(checkCommand('pnpm', ['--version']));
-
     const mise = checkCommand('mise', ['--version']);
     if (mise.ok) {
       checks.push(mise);
@@ -237,9 +251,14 @@ function getRuntimeUrls(mode: SetupMode): { apiUrl?: string; webUrl?: string } {
     };
   }
 
+  const clientHost = clientHostForBind(
+    normalizeHostBindAddress(
+      process.env.HEADLESSX_HOST_BIND?.trim() || env.HEADLESSX_HOST_BIND
+    )
+  );
   return {
-    apiUrl: apiHostPort ? `http://localhost:${apiHostPort}` : undefined,
-    webUrl: webHostPort ? `http://localhost:${webHostPort}` : undefined,
+    apiUrl: apiHostPort ? `http://${clientHost}:${apiHostPort}` : undefined,
+    webUrl: webHostPort ? `http://${clientHost}:${webHostPort}` : undefined,
   };
 }
 
@@ -257,28 +276,10 @@ function resolveRuntimeTargets(runtime: RuntimeSummary, fallbackApiUrl?: string)
 }
 
 function buildCommandChecks(mode?: SetupMode): Array<{ name: string; ok: boolean; detail: string }> {
-  const checks = [
-    checkCommand('git'),
-    checkCommand('docker'),
-    checkCommand('node', ['--version']),
-  ];
-
-  const pnpmCheck = checkCommand('pnpm', ['--version']);
-  if (mode === 'developer') {
-    checks.push(pnpmCheck);
-  } else {
-    checks.push(
-      pnpmCheck.ok
-        ? pnpmCheck
-        : {
-            name: 'pnpm',
-            ok: true,
-            detail: 'not available (optional outside developer mode)',
-          }
-    );
-  }
-
-  return checks;
+  const commandNames = mode ? requiredCommandsForMode(mode) : ['git', 'docker', 'node'];
+  return commandNames.map((name) =>
+    checkCommand(name, name === 'docker' ? ['compose', 'version'] : ['--version'])
+  );
 }
 
 function readTailLines(filePath: string, maxLines: number): string {
@@ -319,11 +320,100 @@ function parseEnvPort(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function syncSelfHostEnvFromCurrent(): { apiUrl: string; webUrl: string } {
+function clientHostForBind(address: string): string {
+  return address === '0.0.0.0' ? 'localhost' : address;
+}
+
+function warnNonLoopbackHostBind(address: string): void {
+  process.stderr.write(
+    `Warning: HEADLESSX_HOST_BIND=${address} publishes the self-host dashboard, PostgreSQL, Redis, and sidecars beyond loopback. Use it only behind a trusted private network, firewall, or authenticated reverse proxy.\n`
+  );
+}
+
+async function resolveComposeHostBind(
+  current: Record<string, string>,
+  options: InitOptions,
+  mode: 'self-host' | 'production'
+): Promise<string> {
+  const requested = options.hostBind?.trim();
+  const existing = current.HEADLESSX_HOST_BIND?.trim();
+
+  if (mode === 'production') {
+    if (requested) {
+      assertProductionHostBind(requested);
+    }
+    if (existing && existing !== DEFAULT_HOST_BIND) {
+      process.stderr.write(
+        'Warning: resetting production core host ports to 127.0.0.1 so dashboard access cannot bypass Caddy.\n'
+      );
+    }
+    return DEFAULT_HOST_BIND;
+  }
+
+  const hostBind = normalizeHostBindAddress(requested || existing);
+  if (!isLoopbackHostBind(hostBind)) {
+    warnNonLoopbackHostBind(hostBind);
+    if (requested && !options.yes) {
+      const accepted = await confirm(
+        'Publish the self-host ports beyond loopback despite this exposure?',
+        false
+      );
+      if (!accepted) {
+        throw new Error('Non-loopback self-host binding was not accepted.');
+      }
+    }
+  }
+  return hostBind;
+}
+
+function assertRuntimeHostBind(mode: 'self-host' | 'production'): void {
+  const current = readEnvFile(getDockerEnvPath());
+  const hostBind = normalizeHostBindAddress(
+    process.env.HEADLESSX_HOST_BIND?.trim() || current.HEADLESSX_HOST_BIND
+  );
+
+  if (mode === 'production') {
+    assertProductionHostBind(hostBind);
+  }
+  if (mode === 'self-host' && !isLoopbackHostBind(hostBind)) {
+    warnNonLoopbackHostBind(hostBind);
+  }
+}
+
+const LEGACY_COMPOSE_SECRET_ENV_KEYS = [
+  'POSTGRES_PASSWORD',
+  'DASHBOARD_INTERNAL_API_KEY',
+  'CREDENTIAL_ENCRYPTION_KEY',
+] as const;
+
+function reconcileComposeCredentials(
+  envPath: string,
+  current: Record<string, string>,
+  useLegacyValues: boolean
+): void {
+  ensureComposeSecretFiles(
+    getWorkspacePaths().secrets,
+    useLegacyValues
+      ? {
+          'postgres-password': current.POSTGRES_PASSWORD,
+          'dashboard-internal-api-key': current.DASHBOARD_INTERNAL_API_KEY,
+          'credential-encryption-key': current.CREDENTIAL_ENCRYPTION_KEY,
+        }
+      : {}
+  );
+  removeEnvValues(envPath, LEGACY_COMPOSE_SECRET_ENV_KEYS);
+}
+
+async function syncSelfHostEnvFromCurrent(
+  options: InitOptions = {},
+  mode: 'self-host' | 'production' = 'self-host'
+): Promise<{ apiUrl: string; webUrl: string }> {
   const envPath = getDockerEnvPath();
+  const hadExistingEnv = fs.existsSync(envPath);
   ensureFileFromExample(getDockerEnvExamplePath(), envPath);
 
   const current = readEnvFile(envPath);
+  const hostBind = await resolveComposeHostBind(current, options, mode);
   const defaults = hostPortDefaults();
   const ports = {
     postgres: parseEnvPort(current.POSTGRES_HOST_PORT, defaults.postgres),
@@ -334,10 +424,21 @@ function syncSelfHostEnvFromCurrent(): { apiUrl: string; webUrl: string } {
     api: parseEnvPort(current.API_HOST_PORT, defaults.api),
   };
 
-  const apiUrl = current.NEXT_PUBLIC_API_URL?.trim() || `http://localhost:${ports.api}`;
-  const webUrl = current.FRONTEND_URL?.trim() || `http://localhost:${ports.web}`;
+  const clientHost = clientHostForBind(hostBind);
+  const resetClientUrls =
+    mode === 'production' || Boolean(options.hostBind?.trim()) || !isLoopbackHostBind(hostBind);
+  const apiUrl =
+    !resetClientUrls && current.NEXT_PUBLIC_API_URL?.trim()
+      ? current.NEXT_PUBLIC_API_URL.trim()
+      : `http://${clientHost}:${ports.api}`;
+  const webUrl =
+    !resetClientUrls && current.FRONTEND_URL?.trim()
+      ? current.FRONTEND_URL.trim()
+      : `http://${clientHost}:${ports.web}`;
+  reconcileComposeCredentials(envPath, current, hadExistingEnv);
 
   upsertEnvValues(envPath, {
+    HEADLESSX_HOST_BIND: hostBind,
     POSTGRES_HOST_PORT: String(ports.postgres),
     REDIS_HOST_PORT: String(ports.redis),
     HTML_TO_MARKDOWN_HOST_PORT: String(ports.htmlToMarkdown),
@@ -347,39 +448,40 @@ function syncSelfHostEnvFromCurrent(): { apiUrl: string; webUrl: string } {
     NEXT_PUBLIC_API_URL: apiUrl,
     INTERNAL_API_URL: current.INTERNAL_API_URL?.trim() || 'http://api:8000',
     FRONTEND_URL: webUrl,
-    DASHBOARD_INTERNAL_API_KEY: resolveSecret(current.DASHBOARD_INTERNAL_API_KEY),
-    CREDENTIAL_ENCRYPTION_KEY: resolveSecret(current.CREDENTIAL_ENCRYPTION_KEY),
   });
 
-  return {
-    apiUrl: `http://localhost:${ports.api}`,
-    webUrl: `http://localhost:${ports.web}`,
-  };
+  return { apiUrl, webUrl };
 }
 
-async function configureSelfHost(options: InitOptions): Promise<{ apiUrl: string; webUrl: string }> {
+async function configureSelfHost(
+  options: InitOptions,
+  mode: 'self-host' | 'production' = 'self-host'
+): Promise<{ apiUrl: string; webUrl: string }> {
   const envPath = getDockerEnvPath();
+  const hadExistingEnv = fs.existsSync(envPath);
   ensureFileFromExample(getDockerEnvExamplePath(), envPath);
 
   const ports = await resolveHostPorts(hostPortDefaults(), { yes: options.yes });
   const current = readEnvFile(envPath);
+  const hostBind = await resolveComposeHostBind(current, options, mode);
+  const clientHost = clientHostForBind(hostBind);
+  reconcileComposeCredentials(envPath, current, hadExistingEnv);
 
   upsertEnvValues(envPath, {
+    HEADLESSX_HOST_BIND: hostBind,
     POSTGRES_HOST_PORT: String(ports.postgres),
     REDIS_HOST_PORT: String(ports.redis),
     HTML_TO_MARKDOWN_HOST_PORT: String(ports.htmlToMarkdown),
     YT_ENGINE_HOST_PORT: String(ports.ytEngine),
     WEB_HOST_PORT: String(ports.web),
     API_HOST_PORT: String(ports.api),
-    NEXT_PUBLIC_API_URL: `http://localhost:${ports.api}`,
-    FRONTEND_URL: `http://localhost:${ports.web}`,
-    DASHBOARD_INTERNAL_API_KEY: resolveSecret(current.DASHBOARD_INTERNAL_API_KEY),
-    CREDENTIAL_ENCRYPTION_KEY: resolveSecret(current.CREDENTIAL_ENCRYPTION_KEY),
+    NEXT_PUBLIC_API_URL: `http://${clientHost}:${ports.api}`,
+    FRONTEND_URL: `http://${clientHost}:${ports.web}`,
   });
 
   return {
-    apiUrl: `http://localhost:${ports.api}`,
-    webUrl: `http://localhost:${ports.web}`,
+    apiUrl: `http://${clientHost}:${ports.api}`,
+    webUrl: `http://${clientHost}:${ports.web}`,
   };
 }
 
@@ -441,27 +543,102 @@ async function configureDeveloper(options: InitOptions): Promise<{ apiUrl: strin
   };
 }
 
-function syncProductionEnvFromCurrent(options: InitOptions): { apiUrl: string; webUrl: string } {
-  syncSelfHostEnvFromCurrent();
+function protectDomainEnv(envPath: string): void {
+  const stat = fs.lstatSync(envPath);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+    throw new Error('The production domain environment file metadata is invalid.');
+  }
+  if (process.platform !== 'win32') {
+    const expectedUid = process.getuid?.();
+    if (expectedUid === undefined || stat.uid !== expectedUid) {
+      throw new Error('The production domain environment file ownership is invalid.');
+    }
+    fs.chmodSync(envPath, 0o600);
+  }
+}
+
+function refreshProductionCaddyfile(): void {
+  syncProductionCaddyfile(getDomainCaddyTemplatePath(), getDomainCaddyfilePath());
+}
+
+async function resolveProductionDashboardAccess(
+  current: Record<string, string>,
+  options: InitOptions
+): Promise<{ username: string; passwordHash: string }> {
+  const username =
+    options.dashboardUser?.trim() ||
+    current.HEADLESSX_DASHBOARD_USER?.trim() ||
+    DEFAULT_DASHBOARD_USER;
+  const suppliedHash = options.dashboardPasswordHash?.trim();
+  const existingHash = current.HEADLESSX_DASHBOARD_PASSWORD_HASH?.trim();
+  let passwordHash =
+    suppliedHash || (existingHash && !existingHash.startsWith('replace-with-') ? existingHash : '');
+
+  if (!passwordHash) {
+    if (!canUseModernPrompts()) {
+      return assertProductionDashboardAccess({ username, passwordHash });
+    }
+
+    const password = await promptPassword({
+      message: 'Production dashboard password',
+      validate: validateDashboardPassword,
+      cancelMessage: 'Production setup cancelled.',
+    });
+    await promptPassword({
+      message: 'Confirm the production dashboard password',
+      validate(value) {
+        const validationError = validateDashboardPassword(value);
+        if (validationError) {
+          return validationError;
+        }
+        if (value !== password) {
+          return 'Dashboard passwords do not match.';
+        }
+        return undefined;
+      },
+      cancelMessage: 'Production setup cancelled.',
+    });
+
+    passwordHash = await withSpinner(
+      'Hashing the dashboard password with Caddy...',
+      () => hashDashboardPassword(password),
+      {
+        successMessage: 'Dashboard access verifier created.',
+        errorMessage: 'Dashboard password hashing failed.',
+      }
+    );
+  }
+
+  return assertProductionDashboardAccess({ username, passwordHash });
+}
+
+async function syncProductionEnvFromCurrent(
+  options: InitOptions
+): Promise<{ apiUrl: string; webUrl: string }> {
+  await syncSelfHostEnvFromCurrent(options, 'production');
 
   const envPath = getDomainEnvPath();
-  const caddyfilePath = getDomainCaddyfilePath();
   ensureFileFromExample(getDomainEnvExamplePath(), envPath);
-  ensureFileFromExample(getDomainCaddyTemplatePath(), caddyfilePath);
+  protectDomainEnv(envPath);
 
   const current = readEnvFile(envPath);
   const webDomain = current.HEADLESSX_WEB_DOMAIN?.trim() || options.webDomain?.trim();
   const apiDomain = current.HEADLESSX_API_DOMAIN?.trim() || options.apiDomain?.trim();
   const caddyEmail = current.CADDY_EMAIL?.trim() || options.caddyEmail?.trim();
+  const dashboardAccess = await resolveProductionDashboardAccess(current, options);
 
   upsertEnvValues(envPath, {
     HEADLESSX_WEB_DOMAIN: webDomain || 'dashboard.example.com',
     HEADLESSX_API_DOMAIN: apiDomain || 'api.example.com',
     CADDY_EMAIL: caddyEmail || 'ops@example.com',
+    HEADLESSX_DASHBOARD_USER: dashboardAccess.username,
+    HEADLESSX_DASHBOARD_PASSWORD_HASH: dashboardAccess.passwordHash,
     HEADLESSX_WEB_UPSTREAM: current.HEADLESSX_WEB_UPSTREAM?.trim() || 'web:3000',
     HEADLESSX_API_UPSTREAM: current.HEADLESSX_API_UPSTREAM?.trim() || 'api:8000',
     HEADLESSX_DOCKER_NETWORK: current.HEADLESSX_DOCKER_NETWORK?.trim() || 'docker_headlessx-network',
   });
+  protectDomainEnv(envPath);
+  refreshProductionCaddyfile();
 
   return {
     apiUrl: apiDomain ? `https://${apiDomain}` : '',
@@ -470,25 +647,30 @@ function syncProductionEnvFromCurrent(options: InitOptions): { apiUrl: string; w
 }
 
 async function configureProduction(options: InitOptions): Promise<{ apiUrl: string; webUrl: string }> {
-  const urls = await configureSelfHost(options);
+  await configureSelfHost(options, 'production');
 
   const envPath = getDomainEnvPath();
-  const caddyfilePath = getDomainCaddyfilePath();
   ensureFileFromExample(getDomainEnvExamplePath(), envPath);
-  ensureFileFromExample(getDomainCaddyTemplatePath(), caddyfilePath);
+  protectDomainEnv(envPath);
 
+  const current = readEnvFile(envPath);
   const webDomain = await promptRequired('What is the dashboard domain?', options.webDomain);
   const apiDomain = await promptRequired('What is the API domain?', options.apiDomain);
   const caddyEmail = await promptRequired(
     'What email should Caddy use for certificate management?',
     options.caddyEmail
   );
+  const dashboardAccess = await resolveProductionDashboardAccess(current, options);
 
   upsertEnvValues(envPath, {
     HEADLESSX_WEB_DOMAIN: webDomain,
     HEADLESSX_API_DOMAIN: apiDomain,
     CADDY_EMAIL: caddyEmail,
+    HEADLESSX_DASHBOARD_USER: dashboardAccess.username,
+    HEADLESSX_DASHBOARD_PASSWORD_HASH: dashboardAccess.passwordHash,
   });
+  protectDomainEnv(envPath);
+  refreshProductionCaddyfile();
 
   return {
     apiUrl: `https://${apiDomain}`,
@@ -545,7 +727,35 @@ function startDeveloper(branch: string): { pid: number; logPath: string; apiUrl:
   };
 }
 
+function assertProductionAccessBoundary(): void {
+  assertRuntimeHostBind('production');
+  const envPath = getDomainEnvPath();
+  const current = readEnvFile(envPath);
+  const dashboardAccess = assertProductionDashboardAccess({
+    username: current.HEADLESSX_DASHBOARD_USER,
+    passwordHash: current.HEADLESSX_DASHBOARD_PASSWORD_HASH,
+  });
+  if (
+    (process.env.HEADLESSX_DASHBOARD_USER !== undefined &&
+      process.env.HEADLESSX_DASHBOARD_USER.trim() !== dashboardAccess.username) ||
+    (process.env.HEADLESSX_DASHBOARD_PASSWORD_HASH !== undefined &&
+      process.env.HEADLESSX_DASHBOARD_PASSWORD_HASH.trim() !== dashboardAccess.passwordHash)
+  ) {
+    throw new Error(
+      'Production dashboard access must come from infra/domain-setup/.env. Remove the shell environment override before starting.'
+    );
+  }
+  upsertEnvValues(envPath, {
+    HEADLESSX_DASHBOARD_USER: dashboardAccess.username,
+    HEADLESSX_DASHBOARD_PASSWORD_HASH: dashboardAccess.passwordHash,
+  });
+  protectDomainEnv(envPath);
+  refreshProductionCaddyfile();
+}
+
 function startSelfHost(branch: string, options: { build?: boolean } = {}): { apiUrl: string; webUrl: string } {
+  assertRuntimeHostBind('self-host');
+  assertComposeSecretFiles(getWorkspacePaths().secrets);
   const args = ['compose', '--profile', 'all', 'up'];
   if (options.build) {
     args.push('--build');
@@ -561,6 +771,8 @@ function startSelfHost(branch: string, options: { build?: boolean } = {}): { api
 }
 
 function startProduction(branch: string, options: { build?: boolean } = {}): { apiUrl: string; webUrl: string } {
+  assertProductionAccessBoundary();
+  assertComposeSecretFiles(getWorkspacePaths().secrets);
   const coreArgs = ['compose', '--profile', 'all', 'up'];
   if (options.build) {
     coreArgs.push('--build');
@@ -668,10 +880,10 @@ async function buildRuntimeSummary(): Promise<RuntimeSummary> {
     return summary;
   }
 
-  const env = readEnvFile(getDockerEnvPath());
+  const urls = getRuntimeUrls('self-host');
   summary.local = {
-    apiUrl: env.API_HOST_PORT ? `http://localhost:${env.API_HOST_PORT}` : null,
-    webUrl: env.WEB_HOST_PORT ? `http://localhost:${env.WEB_HOST_PORT}` : null,
+    apiUrl: urls.apiUrl ?? null,
+    webUrl: urls.webUrl ?? null,
     services: running,
   };
 
@@ -710,7 +922,7 @@ export async function handleInitCommand(options: InitOptions): Promise<void> {
   ]);
 
   const checks = await withSpinner(
-    'Checking Git, Docker, and required runtime tools...',
+    'Checking required runtime tools...',
     () => {
       const detected = detectPrerequisites(mode);
       requireChecks(detected);
@@ -733,13 +945,18 @@ export async function handleInitCommand(options: InitOptions): Promise<void> {
       urls = syncDeveloperEnvFromCurrent();
       await maybeRunDeveloperSetup(options);
     } else if (mode === 'production') {
-      urls = syncProductionEnvFromCurrent(options);
+      urls = await syncProductionEnvFromCurrent(options);
     } else {
-      urls = syncSelfHostEnvFromCurrent();
+      urls = await syncSelfHostEnvFromCurrent(options);
     }
 
     writeMode(mode);
     writeBranch(branch);
+
+    const dashboardUser =
+      mode === 'production'
+        ? readEnvFile(getDomainEnvPath()).HEADLESSX_DASHBOARD_USER
+        : undefined;
 
     const nextSteps = ['headlessx restart', 'headlessx status', 'headlessx doctor'];
     const summary = {
@@ -750,6 +967,7 @@ export async function handleInitCommand(options: InitOptions): Promise<void> {
       updated: true,
       apiUrl: urls.apiUrl,
       webUrl: urls.webUrl,
+      ...(dashboardUser ? { dashboardUser } : {}),
       nextSteps,
     };
 
@@ -758,6 +976,7 @@ export async function handleInitCommand(options: InitOptions): Promise<void> {
         `Mode: ${mode}`,
         `API: ${urls.apiUrl || 'configured in domain setup'}`,
         `Dashboard: ${urls.webUrl || 'configured in domain setup'}`,
+        ...(dashboardUser ? [`Dashboard user: ${dashboardUser}`] : []),
         `Next steps: ${nextSteps.join('  |  ')}`,
       ]);
       await showOutro('HeadlessX is updated. Run headlessx restart to rebuild and load the latest version.');
@@ -813,6 +1032,11 @@ export async function handleInitCommand(options: InitOptions): Promise<void> {
     }
   }
 
+  const dashboardUser =
+    mode === 'production'
+      ? readEnvFile(getDomainEnvPath()).HEADLESSX_DASHBOARD_USER
+      : undefined;
+
   const nextSteps = started
     ? ['headlessx status', 'headlessx doctor']
     : ['headlessx start', 'headlessx status', 'headlessx doctor'];
@@ -824,6 +1048,7 @@ export async function handleInitCommand(options: InitOptions): Promise<void> {
     started,
     apiUrl: urls.apiUrl,
     webUrl: urls.webUrl,
+    ...(dashboardUser ? { dashboardUser } : {}),
     nextSteps,
   };
 
@@ -832,6 +1057,7 @@ export async function handleInitCommand(options: InitOptions): Promise<void> {
       `Mode: ${mode}`,
       `API: ${urls.apiUrl}`,
       `Dashboard: ${urls.webUrl}`,
+      ...(dashboardUser ? [`Dashboard user: ${dashboardUser}`] : []),
       `Started: ${started ? 'yes' : 'no'}`,
       `Next steps: ${nextSteps.join('  |  ')}`,
     ]);
@@ -984,7 +1210,9 @@ export async function handleDoctorCommand(options: DoctorOptions): Promise<void>
     ? await checkHttpHealth(`${runtimeTargets.apiUrl.replace(/\/$/, '')}/api/health`)
     : { ok: false, detail: 'not configured', url: '', tried: [] };
   const webHealth = runtimeTargets.webUrl
-    ? await checkHttpHealth(runtimeTargets.webUrl)
+    ? await checkHttpHealth(runtimeTargets.webUrl, {
+        acceptBasicAuthChallenge: mode === 'production',
+      })
     : { ok: false, detail: 'not configured', url: '', tried: [] };
 
   const payload = {

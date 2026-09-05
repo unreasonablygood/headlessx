@@ -45,6 +45,7 @@ COPY nx.json ./
 COPY apps/api ./apps/api
 COPY infra/docker/api-entrypoint.sh /usr/local/bin/headlessx-api-entrypoint
 COPY infra/docker/worker-entrypoint.sh /usr/local/bin/headlessx-worker-entrypoint
+COPY infra/docker/load-postgres-credential.sh /usr/local/bin/headlessx-load-postgres-credential
 COPY infra/docker/headfox-server.mjs /app/apps/api/headfox-server.mjs
 
 # Install dependencies
@@ -67,6 +68,10 @@ RUN mkdir -p apps/api/models && \
     python3 -c "import urllib.request; urllib.request.urlretrieve('https://huggingface.co/DannyLuna/recaptcha-classification-57k/resolve/main/recaptcha_classification_57k.onnx', 'apps/api/models/recaptcha_classification_57k.onnx')"
 
 # Start the API
+# Production credential readers require the fixed root-owned 0400 mounts.
+USER root
+
 WORKDIR /app/apps/api
-RUN chmod +x /usr/local/bin/headlessx-api-entrypoint /usr/local/bin/headlessx-worker-entrypoint
+RUN chmod +x /usr/local/bin/headlessx-api-entrypoint /usr/local/bin/headlessx-worker-entrypoint \
+    /usr/local/bin/headlessx-load-postgres-credential
 CMD ["/usr/local/bin/headlessx-api-entrypoint"]

@@ -44,10 +44,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/saifyxpro/HeadlessX.git"
+    "url": "git+https://github.com/unreasonablygood/headlessx.git"
   },
   "bugs": {
-    "url": "https://github.com/saifyxpro/HeadlessX/issues"
+    "url": "https://github.com/unreasonablygood/headlessx/issues"
   },
   "homepage": "https://headlessx.saify.me/docs",
   "engines": {

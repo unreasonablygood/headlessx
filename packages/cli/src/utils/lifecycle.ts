@@ -7,6 +7,15 @@ import { promptConfirm, promptSelect, promptText } from './ui';
 import type { SetupMode } from './workspace';
 
 export type EnvMap = Record<string, string>;
+export const COMPOSE_SECRET_NAMES = [
+  'postgres-password',
+  'dashboard-internal-api-key',
+  'credential-encryption-key',
+  'evidence-api-key',
+] as const;
+
+export type ComposeSecretName = (typeof COMPOSE_SECRET_NAMES)[number];
+export type ComposeSecretValues = Partial<Record<ComposeSecretName, string | undefined>>;
 
 export interface CommandCheck {
   name: string;
@@ -20,6 +29,29 @@ export interface HealthCheckResult {
   url: string;
   tried: string[];
 }
+
+export interface ProductionDashboardAccessInput {
+  username?: string;
+  passwordHash?: string;
+}
+
+export interface ProductionDashboardAccess {
+  username: string;
+  passwordHash: string;
+}
+
+export interface LifecycleCommandResult {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  status: number | null;
+}
+
+export type LifecycleCommandRunner = (
+  command: string,
+  args: string[],
+  options?: SpawnSyncOptions
+) => LifecycleCommandResult;
 
 export interface HostPortConfig {
   api: number;
@@ -53,8 +85,55 @@ const DEVELOPER_PORT_DEFAULTS: DeveloperPortConfig = {
   ytEngine: 38090,
 };
 
+export const DEFAULT_HOST_BIND = '127.0.0.1';
+export const DEFAULT_DASHBOARD_USER = 'headlessx';
+export const PRODUCTION_CADDY_AUTH_MARKER = '# headlessx-dashboard-auth-v1';
+
+const CADDY_PASSWORD_IMAGE = 'caddy:2.10-alpine';
+const DASHBOARD_USER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/;
+const BCRYPT_VERIFIER_PATTERN = /^\$2[aby]\$(\d{2})\$[./A-Za-z0-9]{53}$/;
+
+export function normalizeHostBindAddress(value?: string): string {
+  const normalized = value?.trim() || DEFAULT_HOST_BIND;
+  if (net.isIP(normalized) !== 4) {
+    throw new Error('HEADLESSX_HOST_BIND must be an IPv4 address.');
+  }
+  return normalized;
+}
+
+export function isLoopbackHostBind(value?: string): boolean {
+  return normalizeHostBindAddress(value).startsWith('127.');
+}
+
+export function assertProductionHostBind(value?: string): string {
+  const normalized = normalizeHostBindAddress(value);
+  if (normalized !== DEFAULT_HOST_BIND) {
+    throw new Error(
+      'Production core host ports must remain bound to 127.0.0.1 so dashboard access cannot bypass Caddy.'
+    );
+  }
+  return normalized;
+}
+
 function quoteIfNeeded(value: string): string {
+  if (value.includes('$')) {
+    return `'${value.replace(/'/g, "\\'")}'`;
+  }
   return /\s/.test(value) ? JSON.stringify(value) : value;
+}
+
+function decodeEnvValue(rawValue: string): string {
+  if (rawValue.startsWith("'") && rawValue.endsWith("'")) {
+    return rawValue.slice(1, -1).replace(/\\'/g, "'");
+  }
+  if (rawValue.startsWith('"') && rawValue.endsWith('"')) {
+    try {
+      return JSON.parse(rawValue) as string;
+    } catch {
+      return rawValue.slice(1, -1);
+    }
+  }
+  return rawValue;
 }
 
 export function readEnvFile(filePath: string): EnvMap {
@@ -75,7 +154,7 @@ export function readEnvFile(filePath: string): EnvMap {
       continue;
     }
     const [, key, rawValue] = match;
-    env[key] = rawValue.replace(/^['"]|['"]$/g, '');
+    env[key] = decodeEnvValue(rawValue);
   }
 
   return env;
@@ -92,6 +171,32 @@ export function ensureFileFromExample(examplePath: string, targetPath: string): 
 
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   fs.copyFileSync(examplePath, targetPath);
+}
+
+export function syncProductionCaddyfile(templatePath: string, targetPath: string): void {
+  if (!fs.existsSync(templatePath)) {
+    throw new Error(`Missing bootstrap template: ${templatePath}`);
+  }
+
+  const content = fs.readFileSync(templatePath, 'utf-8');
+  if (!content.split(/\r?\n/).includes(PRODUCTION_CADDY_AUTH_MARKER)) {
+    throw new Error(
+      'The production Caddy access boundary is outdated. Run "headlessx init update" before starting.'
+    );
+  }
+
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  if (fs.existsSync(targetPath)) {
+    const stat = fs.lstatSync(targetPath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+      throw new Error('The generated production Caddyfile metadata is invalid.');
+    }
+    // Preserve the inode so a stopped Compose container's bind mount sees the
+    // refreshed policy when it starts again.
+    fs.writeFileSync(targetPath, content, 'utf-8');
+    return;
+  }
+  fs.writeFileSync(targetPath, content, { encoding: 'utf-8', flag: 'wx', mode: 0o644 });
 }
 
 export function upsertEnvValues(filePath: string, values: EnvMap): void {
@@ -125,6 +230,23 @@ export function upsertEnvValues(filePath: string, values: EnvMap): void {
   fs.writeFileSync(filePath, normalized.endsWith('\n') ? normalized : `${normalized}\n`, 'utf-8');
 }
 
+export function removeEnvValues(filePath: string, keys: readonly string[]): void {
+  if (!fs.existsSync(filePath)) {
+    return;
+  }
+
+  const removed = new Set(keys);
+  const lines = fs
+    .readFileSync(filePath, 'utf-8')
+    .split(/\r?\n/)
+    .filter((line) => {
+      const match = line.match(/^([A-Z0-9_]+)=/);
+      return !match || !removed.has(match[1]);
+    });
+  const normalized = lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n*$/, '\n');
+  fs.writeFileSync(filePath, normalized, 'utf-8');
+}
+
 export function generateSecret(bytes = 24): string {
   return randomBytes(bytes).toString('hex');
 }
@@ -137,11 +259,201 @@ export function resolveSecret(currentValue?: string): string {
   return normalized;
 }
 
+export function validateDashboardPassword(value: string | undefined): string | undefined {
+  if (!value || !value.trim()) {
+    return 'A dashboard password is required.';
+  }
+
+  const bytes = Buffer.from(value, 'utf-8');
+  if (bytes.length < 16) {
+    return 'Use at least 16 bytes for the dashboard password.';
+  }
+  if (bytes.length > 72) {
+    return 'The dashboard password cannot exceed 72 bytes with bcrypt.';
+  }
+  if (bytes.some((byte) => byte < 0x20 || byte === 0x7f)) {
+    return 'The dashboard password cannot contain control bytes.';
+  }
+  return undefined;
+}
+
+export function assertProductionDashboardAccess(
+  input: ProductionDashboardAccessInput
+): ProductionDashboardAccess {
+  const username = input.username?.trim();
+  if (!username) {
+    throw new Error(
+      'Production dashboard Basic Auth username is missing. Run "headlessx init update" before starting.'
+    );
+  }
+  if (!DASHBOARD_USER_PATTERN.test(username)) {
+    throw new Error(
+      'Production dashboard Basic Auth username must use 1-64 letters, numbers, dots, underscores, @, or hyphens.'
+    );
+  }
+
+  const passwordHash = input.passwordHash?.trim();
+  if (!passwordHash) {
+    throw new Error(
+      'Production dashboard bcrypt verifier is missing. Run "headlessx init update" interactively or provide "--dashboard-password-hash".'
+    );
+  }
+
+  const match = passwordHash.match(BCRYPT_VERIFIER_PATTERN);
+  const cost = match ? Number(match[1]) : Number.NaN;
+  if (!match || cost < 10 || cost > 16) {
+    throw new Error(
+      'Production dashboard password verifier must be a bcrypt hash with cost 10 through 16.'
+    );
+  }
+
+  return { username, passwordHash };
+}
+
+export function hashDashboardPassword(
+  password: string,
+  execute: LifecycleCommandRunner = runCommand
+): string {
+  const validationError = validateDashboardPassword(password);
+  if (validationError) {
+    throw new Error(validationError);
+  }
+
+  const result = execute(
+    'docker',
+    [
+      'run',
+      '--rm',
+      '-i',
+      '--network',
+      'none',
+      CADDY_PASSWORD_IMAGE,
+      'caddy',
+      'hash-password',
+      '--algorithm',
+      'bcrypt',
+    ],
+    {
+      input: password,
+    }
+  );
+  if (!result.success) {
+    throw new Error('Caddy could not hash the dashboard password.');
+  }
+
+  return assertProductionDashboardAccess({
+    username: DEFAULT_DASHBOARD_USER,
+    passwordHash: result.stdout.trim(),
+  }).passwordHash;
+}
+
+function assertSecretValue(name: ComposeSecretName, value: string): void {
+  const bytes = Buffer.from(value, 'utf-8');
+  const minimumBytes = name === 'postgres-password' ? 1 : 32;
+  if (bytes.length < minimumBytes || bytes.length > 16 * 1024) {
+    throw new Error(`HeadlessX ${name} credential length is invalid.`);
+  }
+  if (bytes.some((byte) => byte <= 0x20 || byte === 0x7f)) {
+    throw new Error(`HeadlessX ${name} credential contains whitespace or control bytes.`);
+  }
+}
+
+function assertPrivatePath(filePath: string, kind: 'directory' | 'file'): void {
+  const stat = fs.lstatSync(filePath);
+  const matchesKind = kind === 'directory' ? stat.isDirectory() : stat.isFile();
+  if (!matchesKind || stat.isSymbolicLink()) {
+    throw new Error(`HeadlessX credential ${path.basename(filePath)} metadata is invalid.`);
+  }
+
+  if (process.platform !== 'win32') {
+    const expectedUid = process.getuid?.();
+    if (
+      expectedUid === undefined ||
+      stat.uid !== expectedUid ||
+      (kind === 'file' && (stat.nlink !== 1 || (stat.mode & 0o777) !== 0o400)) ||
+      (kind === 'directory' && (stat.mode & 0o077) !== 0)
+    ) {
+      throw new Error(`HeadlessX credential ${path.basename(filePath)} metadata is invalid.`);
+    }
+  }
+}
+
+export function assertComposeSecretFiles(secretDirectory: string): void {
+  if (!fs.existsSync(secretDirectory)) {
+    throw new Error(
+      'HeadlessX Compose credentials are missing. Run "headlessx init update" before starting.'
+    );
+  }
+
+  assertPrivatePath(secretDirectory, 'directory');
+  for (const name of COMPOSE_SECRET_NAMES) {
+    const filePath = path.join(secretDirectory, name);
+    if (!fs.existsSync(filePath)) {
+      throw new Error(
+        `HeadlessX Compose credential ${name} is missing. Run "headlessx init update" before starting.`
+      );
+    }
+    assertPrivatePath(filePath, 'file');
+    assertSecretValue(name, fs.readFileSync(filePath, 'utf-8'));
+  }
+}
+
+export function ensureComposeSecretFiles(
+  secretDirectory: string,
+  legacyValues: ComposeSecretValues = {}
+): void {
+  if (fs.existsSync(secretDirectory)) {
+    assertComposeSecretFiles(secretDirectory);
+    return;
+  }
+
+  const values = Object.fromEntries(
+    COMPOSE_SECRET_NAMES.map((name) => {
+      const legacyValue = legacyValues[name];
+      const value =
+        legacyValue && !legacyValue.startsWith('replace-with-') ? legacyValue : generateSecret(32);
+      assertSecretValue(name, value);
+      return [name, value];
+    })
+  ) as Record<ComposeSecretName, string>;
+
+  const parentDirectory = path.dirname(secretDirectory);
+  fs.mkdirSync(parentDirectory, { recursive: true });
+  const stagingDirectory = fs.mkdtempSync(path.join(parentDirectory, '.headlessx-secrets-'));
+
+  try {
+    if (process.platform !== 'win32') {
+      fs.chmodSync(stagingDirectory, 0o700);
+    }
+    for (const name of COMPOSE_SECRET_NAMES) {
+      const filePath = path.join(stagingDirectory, name);
+      fs.writeFileSync(filePath, values[name], {
+        encoding: 'utf-8',
+        flag: 'wx',
+        mode: 0o400,
+      });
+      if (process.platform !== 'win32') {
+        fs.chmodSync(filePath, 0o400);
+      }
+    }
+    fs.renameSync(stagingDirectory, secretDirectory);
+  } catch (error) {
+    fs.rmSync(stagingDirectory, { recursive: true, force: true });
+    throw error;
+  }
+
+  assertComposeSecretFiles(secretDirectory);
+}
+
+export function requiredCommandsForMode(mode: SetupMode): string[] {
+  return mode === 'developer' ? ['git', 'node', 'pnpm'] : ['git', 'docker'];
+}
+
 export function runCommand(
   command: string,
   args: string[],
   options: SpawnSyncOptions = {}
-): { success: boolean; stdout: string; stderr: string; status: number | null } {
+): LifecycleCommandResult {
   const result = spawnSync(command, args, {
     encoding: 'utf-8',
     ...options,
@@ -400,7 +712,10 @@ export function buildHealthProbeCandidates(url: string): string[] {
   return Array.from(new Set(candidates));
 }
 
-export async function checkHttpHealth(url: string): Promise<HealthCheckResult> {
+export async function checkHttpHealth(
+  url: string,
+  options: { acceptBasicAuthChallenge?: boolean } = {}
+): Promise<HealthCheckResult> {
   const candidates = buildHealthProbeCandidates(url);
   let lastFailure = 'request failed';
 
@@ -409,7 +724,11 @@ export async function checkHttpHealth(url: string): Promise<HealthCheckResult> {
       const response = await fetch(candidate, {
         signal: AbortSignal.timeout(5000),
       });
-      if (response.ok) {
+      const basicAuthChallenge =
+        options.acceptBasicAuthChallenge === true &&
+        response.status === 401 &&
+        /^Basic(?:\s|$)/i.test(response.headers.get('www-authenticate') ?? '');
+      if (response.ok || basicAuthChallenge) {
         return {
           ok: true,
           detail: `${response.status} ${response.statusText}`,

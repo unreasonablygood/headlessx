@@ -28,6 +28,15 @@ Highest priority first:
 3. stored local credentials
 4. default API URL
 
+This precedence applies only to the published CLI against ordinary HeadlessX
+API routes. The owner-installed fixed Tailnet client is a separate surface and
+does not use these credentials.
+
+Production dashboard Basic Auth is a separate browser-to-Caddy boundary. Its
+password and bcrypt verifier are never CLI login credentials. Caddy removes
+the browser `Authorization` header before the request reaches HeadlessX; the
+public API domain and operator CLI continue to use `x-api-key`.
+
 ## Environment Variables
 
 Primary names:
@@ -97,20 +106,20 @@ headlessx google "latest ai news" --json --pretty
 headlessx scrape https://example.com --type content -o page.md
 ```
 
-## Good Smoke-Check Sequence
+## Scoped verification
+
+Use only the check that matches the requested result:
 
 ```bash
-headlessx --help
-headlessx login --help
+headlessx <command> --help
 headlessx status
-headlessx operators list
+headlessx doctor
 ```
 
-Python helper:
-
-```bash
-python3 scripts/smoke_cli.py
-```
+Command help verifies grammar. `status` and `doctor` verify lifecycle
+configuration or reachability. Prove operator behavior with one bounded
+operator request rather than an unrelated command sweep.
 
 Status and doctor do not require an API key for local reachability checks.
-When the CLI is not logged in, auth-dependent operator checks are reported as skipped instead of failed.
+When the CLI is not logged in, auth-dependent operator checks are reported as
+skipped instead of failed.

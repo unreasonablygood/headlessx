@@ -1,3 +1,5 @@
+import { getDashboardInternalApiKey } from './dashboardInternalApiKey';
+
 export type PlaygroundOperatorState =
     | 'active'
     | 'configuration_required'
@@ -33,15 +35,17 @@ type PlaygroundOperatorsPayload = {
     };
 };
 
-const backendApiUrl =
-    process.env.INTERNAL_API_URL?.trim() || process.env.NEXT_PUBLIC_API_URL?.trim();
-const dashboardInternalApiKey = process.env.DASHBOARD_INTERNAL_API_KEY?.trim();
+function getBackendApiUrl(): string | undefined {
+    return process.env.INTERNAL_API_URL?.trim() || process.env.NEXT_PUBLIC_API_URL?.trim();
+}
 
 function delay(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fetchOperators(): Promise<PlaygroundOperator[]> {
+    const backendApiUrl = getBackendApiUrl();
+    const dashboardInternalApiKey = getDashboardInternalApiKey();
     if (!backendApiUrl || !dashboardInternalApiKey) {
         return [];
     }
@@ -103,11 +107,11 @@ export async function getYoutubeAvailabilityState(): Promise<PlaygroundOperatorA
         };
     }
 
-    if (!backendApiUrl || !dashboardInternalApiKey) {
+    if (!getBackendApiUrl() || !getDashboardInternalApiKey()) {
         return {
             available: false,
             state: 'configuration_required',
-            reason: 'The dashboard internal API is not configured. Check INTERNAL_API_URL and DASHBOARD_INTERNAL_API_KEY.',
+            reason: 'The dashboard internal API URL or runtime credential is not configured.',
         };
     }
 

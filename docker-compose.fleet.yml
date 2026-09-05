@@ -8,6 +8,8 @@
 # dropped (models are baked into the api image via api.Dockerfile), explicit ipam
 # subnet (beelink address-pool exhaustion), restart: unless-stopped on all
 # services. api is the only host-published service (Tailscale :38473).
+# Unlike CLI-managed Compose, this owner path mounts the root-owned fixed
+# credential generation directly and does not use user-managed bootstrap files.
 services:
   postgres:
     image: postgres:15-alpine
