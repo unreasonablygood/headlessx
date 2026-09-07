@@ -86,6 +86,8 @@ services:
       args:
         HEADLESSX_BUILD_SOURCE_COMMIT: ${SOURCE_COMMIT:?full-source-commit-required}
     restart: unless-stopped
+    # Reap orphaned browser children instead of leaving Node as PID 1.
+    init: true
     depends_on:
       postgres:
         condition: service_healthy
