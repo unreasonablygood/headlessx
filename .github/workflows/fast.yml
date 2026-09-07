@@ -12,7 +12,7 @@ permissions:
 jobs:
   fast:
     name: fast
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, fleet-ci-general, fleet-ci-small-linux-x64]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +26,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: bin/check fast

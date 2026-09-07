@@ -19,6 +19,13 @@ The production Compose runs the API, PostgreSQL, Redis, HTML-to-Markdown, and
 YouTube engine. Only the API port is published. Internal dependencies remain on
 the isolated `headlessx-network`.
 
+The API uses Docker's `init: true` so orphaned browser subprocesses are reaped.
+Node must not be PID 1: unreaped Firefox children can exhaust the container's
+task limit while the API health endpoint remains healthy. After a browser
+lifecycle repair, verify the init process and compare in-container zombie
+counts before and after repeated direct and WebDocument captures. Docker
+`top` alone is insufficient because its cgroup process list omits zombies.
+
 ## Credential ownership
 
 The host selects an atomically installed generation under
