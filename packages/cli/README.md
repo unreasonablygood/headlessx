@@ -49,8 +49,9 @@ Requirements:
 - macOS, Linux, or Windows 11 with WSL2
 - Node.js 18+ for the published CLI
 - Git for `headlessx init`
-- Docker for `self-host` and `production`
-- Node.js 22+ and pnpm 10.32.1+ if you plan to use `developer` mode
+- Docker Engine with Compose v2 for `self-host` and `production`
+- Node.js 22+, pnpm 10.32.1+, and reachable PostgreSQL and Redis services for
+  `developer`; Docker is optional when those services are provided another way
 
 To align your machine with the repo-pinned pnpm release:
 
@@ -59,11 +60,11 @@ corepack enable
 corepack use pnpm@10.32.1
 ```
 
-Inside the monorepo:
+From the monorepo root:
 
 ```bash
-pnpm --dir /home/saifyxpro/CODE/Crawl/HeadlessX --filter @headlessx-cli/core build
-node /home/saifyxpro/CODE/Crawl/HeadlessX/packages/cli/dist/index.js --help
+pnpm --filter @headlessx-cli/core build
+node packages/cli/dist/index.js --help
 ```
 
 ## Lifecycle Bootstrap
@@ -90,13 +91,24 @@ headlessx restart
 headlessx doctor
 ```
 
+Compose host ports bind to `127.0.0.1` by default. A non-loopback
+`--host-bind <ipv4>` is available only as an explicit self-host opt-in; the CLI
+warns because it also publishes the dashboard and data services. Production
+keeps core ports on loopback and uses Caddy's Docker network for public
+domains.
+
+Production setup masked-prompts for a separate dashboard password and stores
+only its bcrypt verifier. For unattended setup, pass a precomputed verifier
+with `--dashboard-password-hash`; the CLI has no plaintext-password flag.
+
 Default workspace layout:
 
 - workspace root: `~/.headlessx`
-- cloned repo: `~/.headlessx/repo`
-- self-host env: `~/.headlessx/repo/infra/docker/.env`
-- production env: `~/.headlessx/repo/infra/domain-setup/.env`
-- production Caddy config: `~/.headlessx/repo/infra/domain-setup/Caddyfile`
+- cloned owner fork: `~/.headlessx/repo`
+- fixed Compose credential sources: `~/.headlessx/repo/infra/docker/secrets`
+- self-host non-secret config: `~/.headlessx/repo/infra/docker/.env`
+- production domain config and bcrypt verifier: `~/.headlessx/repo/infra/domain-setup/.env`
+- generated protected Caddy config: `~/.headlessx/repo/infra/domain-setup/Caddyfile`
 
 After `headlessx init` or `headlessx start`, verify the install with:
 
@@ -111,17 +123,57 @@ Update an existing CLI-managed workspace with:
 headlessx init update
 headlessx restart
 headlessx logs --tail 200 --no-follow
+```
+
+For Caddy logs in `production` mode only:
+
+```bash
 headlessx logs caddy --tail 100 --no-follow
 ```
 
-`headlessx init update` reuses the saved mode, reconciles missing env keys for that mode, keeps the current config values where possible, and pulls `main` by default unless `--branch` is provided.
-For `self-host` and `production`, `headlessx restart` rebuilds Docker images before starting the stack again.
+`headlessx init update` reuses the saved mode, reconciles configuration,
+migrates legacy Compose credential values into fixed private files, refreshes
+the production Caddy policy, and pulls `master` by default unless `--branch` is
+provided. It never prints fixed credential values or the dashboard password.
+An unattended production update without a valid existing or supplied bcrypt
+verifier fails closed.
 
-That env reconciliation now covers missing values such as `YT_ENGINE_URL`, `INTERNAL_API_URL`, and `DASHBOARD_INTERNAL_API_KEY`.
+For `self-host` and `production`, `headlessx restart` rebuilds Docker images
+before starting the stack again.
+
+### Credential contract by mode
+
+- `developer` uses the root `.env`; API and worker read
+  `DASHBOARD_INTERNAL_API_KEY` and `CREDENTIAL_ENCRYPTION_KEY` only because the
+  processes are non-production.
+- `self-host` and CLI-managed `production` keep four private source files under
+  `~/.headlessx/repo/infra/docker/secrets`. Compose copies only the credentials
+  each service needs into root-owned `0400` runtime volumes before the app starts.
+- An incomplete existing credential directory is refused instead of silently
+  regenerated, because changing database or encryption credentials could make
+  persisted data unavailable.
+
+CLI-managed production has an additional browser boundary. The dashboard
+domain requires Caddy Basic Auth before requests reach the web app, and Caddy
+strips that `Authorization` header upstream. The API domain retains ordinary
+`x-api-key` authentication. The Basic Auth password, dashboard-internal key,
+and user-created API keys are three distinct credentials.
+
+The owner-operated API-only production deployment has a separate direct
+contract in `docs/runbooks/headlessx.md`: root-owned files under
+`/etc/headlessx/credentials/current` mount directly through
+`docker-compose.fleet.yml`. Neither production path accepts those fixed
+credential values from environment rows.
 
 ## Authentication
 
-The `headlessx` command uses HeadlessX API keys only.
+The `headlessx` operator command uses HeadlessX API keys only. The separate
+production dashboard username/password is consumed by the browser and Caddy,
+not by CLI login.
+
+This API-key workflow is for ordinary routes on user-managed installations. It
+is not the owner-installed fixed Tailnet client, whose admitted scrape routes
+use fixed source identity and no CLI login.
 
 Supported config sources:
 

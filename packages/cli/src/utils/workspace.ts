@@ -18,6 +18,7 @@ export interface WorkspacePaths {
   root: string;
   repo: string;
   runtime: string;
+  secrets: string;
   logs: string;
   backups: string;
   modeFile: string;
@@ -25,8 +26,8 @@ export interface WorkspacePaths {
   lastStartFile: string;
 }
 
-export const DEFAULT_BRANCH = 'main';
-export const DEFAULT_REPO_URL = 'https://github.com/saifyxpro/HeadlessX.git';
+export const DEFAULT_BRANCH = 'master';
+export const DEFAULT_REPO_URL = 'https://github.com/unreasonablygood/headlessx.git';
 
 export function getWorkspaceRoot(): string {
   return process.env.HEADLESSX_WORKSPACE_DIR?.trim() || path.join(os.homedir(), '.headlessx');
@@ -43,6 +44,7 @@ export function getWorkspacePaths(): WorkspacePaths {
   return {
     root,
     repo: path.join(root, 'repo'),
+    secrets: path.join(root, 'repo', 'infra', 'docker', 'secrets'),
     runtime,
     logs: path.join(root, 'logs'),
     backups: path.join(root, 'backups'),

@@ -2,6 +2,28 @@
 
 This file orients AI coding agents working in the HeadlessX repository. It reflects the actual layout, conventions, and constraints of **v2.1.2**.
 
+This is the `unreasonablygood/headlessx` owner fork. It contains a self-hosted
+scraping platform, a dashboard, queue-backed workers, sidecars, the published
+user-managed CLI, and the owner-operated direct API deployment.
+
+## Start with the owning source
+
+Read the owning source alongside the inline operational guidance:
+
+| Work | Source and contract |
+| --- | --- |
+| API route or auth | `apps/api/src/app.ts`, matching route/middleware, `docs/api-endpoints.md` |
+| Browser behavior | `apps/api/src/services/scrape/`, `packages/headfox-js/` |
+| Dashboard | `apps/web/README.md`, `apps/web/src/app/`, `apps/web/src/components/` |
+| Published CLI | `packages/cli/src/`, `packages/cli/README.md`, `skills/cli/` |
+| Local/self-host setup | `docs/setup-guide.md`, `infra/docker/docker-compose.yml` |
+| Caddy domains | `infra/domain-setup/README.md` |
+| Owner direct production | `docs/runbooks/headlessx.md`, `docker-compose.fleet.yml` |
+| Security or responsible use | `docs/SECURITY.md`, `docs/ETHICS.md` |
+
+The external `headlessx.saify.me` documentation is a separate repository. Do
+not treat it as source authority for this fork.
+
 ## Project Overview
 
 HeadlessX is a **self-hosted scraping and extraction platform** with:
@@ -133,6 +155,12 @@ pnpm knip          # unused exports/deps
 
 ---
 
+`pnpm dev` starts app processes and sidecars, not PostgreSQL or Redis. Compose
+host ports bind to `127.0.0.1` by default: web `34872`, API `38473`, PostgreSQL
+`35432`, Redis `36379`, HTML-to-Markdown `38081`, and yt-engine `38090`.
+Non-loopback self-host binding is an explicit warned opt-in; production core
+ports remain loopback-only because public access enters through Caddy.
+
 ## Port Conventions
 
 HeadlessX uses uncommon ports to avoid conflicts with typical `3000`/`8000` stacks:
@@ -150,7 +178,32 @@ Docker internal container ports differ (e.g. API listens on `8000` inside compos
 
 ---
 
+## Runtime and credential modes
+
+| Mode | Runtime | Credential authority |
+| --- | --- | --- |
+| `developer` | local API, worker, web, and sidecar processes | root `.env`; environment credentials are allowed only because the processes are non-production |
+| `self-host` | full `infra/docker` Compose stack, host ports on `127.0.0.1` by default | private source files under `~/.headlessx/repo/infra/docker/secrets`; core `.env` is non-secret |
+| CLI-managed `production` | the same app stack plus public `infra/domain-setup` Caddy | root-owned `0400` app credential volumes plus a private domain `.env` containing only the dashboard bcrypt verifier |
+| owner API-only production | `docker-compose.fleet.yml` on the fixed Tailnet listener | root-owned `0400` files under `/etc/headlessx/credentials/current`, mounted directly |
+
+The CLI creates or migrates the database, dashboard-internal, encryption, and
+evidence credential files without printing values. An existing incomplete set
+is an error; never regenerate a database or encryption credential implicitly.
+For production browser access, it masked-prompts for a separate dashboard
+password, sends it to the fixed Caddy hasher over stdin, and persists only the
+bcrypt verifier. In production, the fixed app credentials do not fall back to
+`.env`, Coolify rows, or caller-selected secret paths.
+
+Developer mode requires reachable PostgreSQL and Redis but not Docker when
+those services are provided another way. `self-host` and `production` require
+Docker Engine with Compose v2.
+
 ## Environment Variables
+
+The file locations and environment examples below describe local developer
+processes. They do not override the production file-only credential contract.
+Agents never read or print credential values or inspect these private files.
 
 ### File Locations
 
@@ -159,8 +212,8 @@ Docker internal container ports differ (e.g. API listens on `8000` inside compos
 | `.env` (repo root) | **Primary** source for `pnpm dev` / local development |
 | `apps/api/.env.local` | Optional API-only overrides (loaded before root `.env`) |
 | `apps/web/.env.local` | Optional web-only overrides |
-| `infra/docker/.env` | Docker Compose stack |
-| `infra/domain-setup/.env` | Production Caddy/domain layer |
+| `infra/docker/.env` | Non-secret Docker Compose settings; fixed credentials use private files |
+| `infra/domain-setup/.env` | Production Caddy/domain layer with dashboard bcrypt verifier; never inspect its values |
 
 ### Required Security Keys
 
@@ -190,12 +243,25 @@ Env loading order for API: `apps/api/.env.local` → root `.env` (see `apps/api/
 
 ## Auth Model
 
-| Context | Header | Key Type |
-| --- | --- | --- |
-| All `/api/*` except health | `x-api-key` | User API key (`hx_…`) or internal dashboard key |
-| Dashboard → API proxy | `x-api-key` | `DASHBOARD_INTERNAL_API_KEY` (injected by `apps/web/src/app/api/[...path]/route.ts`) |
-| MCP at `/mcp` | `x-api-key` | **User-created API key only** — internal key is explicitly rejected |
-| CLI | `x-api-key` | User API key (via `headlessx login` or env) |
+| Surface | Admission |
+| --- | --- |
+| `GET /api/health` | unauthenticated |
+| ordinary protected API routes | `x-api-key` with a user-created key or the dashboard internal key |
+| production dashboard browser | Caddy Basic Auth with the configured operator username and bcrypt verifier |
+| dashboard server proxy | fixed dashboard internal key; never exposed to browser components |
+| MCP `/mcp` | user-created API key only |
+| published `@headlessx-cli/core` operator commands | user-created API key through login, flags, or documented env precedence |
+| fixed owner website scrape/evidence paths | compiled trusted-seat Tailnet identity; WebDocument additionally presents the fixed evidence credential |
+
+The trusted exception is limited to the website paths enumerated in
+`docs/runbooks/headlessx.md`. Other Tailnet identities are refused there.
+Public callers fall through to ordinary API-key authentication. Never use
+`DASHBOARD_INTERNAL_API_KEY` or the evidence credential for MCP, published CLI
+login, or external clients.
+
+The owner-installed fixed Tailnet `headlessx` client and the published
+`@headlessx-cli/core` binary share a name but not an admission model. Preserve
+that distinction in code and documentation.
 
 User API keys are stored hashed (`sha256:…`) in PostgreSQL (`ApiKey` model). Internal key sets `req.isInternal = true` and skips `apiKeyId` for logging.
 
@@ -357,7 +423,9 @@ docs: refresh setup and API guides
 
 CLI smoke test: `skills/cli/scripts/smoke_cli.py`
 
-Before PRs, run at minimum:
+Validate the changed surface, not an unrelated itinerary. CLI behavior uses
+its package tests; web UI changes require the actual browser surface. For
+changes that affect the build or lint contract, the root commands are:
 
 ```bash
 pnpm build
@@ -394,7 +462,7 @@ pnpm run models:download
 # or: mise run models
 ```
 
-**Note:** `scripts/download_models.py` references a legacy `backend/models` path. The canonical target is `apps/api/models/` (used by Docker volumes and `headlessx doctor`). If the script fails, place models manually in `apps/api/models/`.
+**Note:** `scripts/download_models.py` still references a legacy `backend/models` path. The canonical target is `apps/api/models/` (used by Docker volumes and `headlessx doctor`). The current command can return without downloading when that legacy directory is absent; repair the owning downloader before relying on it. Do not report model readiness from that command's exit code or invent a manual-copy workaround.
 
 ---
 
@@ -402,12 +470,18 @@ pnpm run models:download
 
 ### Full Docker Stack
 
+Use the published user-managed CLI to establish or migrate the private
+credential files before starting the Compose stack. These commands are not the
+owner-installed fixed Tailnet client:
+
 ```bash
-cp infra/docker/.env.example infra/docker/.env
-# Set DASHBOARD_INTERNAL_API_KEY, CREDENTIAL_ENCRYPTION_KEY
-cd infra/docker
-docker compose --profile all up --build -d
+headlessx init --mode self-host
+headlessx status
+headlessx doctor
 ```
+
+The CLI owns credential materialization and launches the full Compose profile;
+do not restore production environment-secret setup from the old instructions.
 
 **Always use `--profile all`** — partial profiles break due to `depends_on` relationships.
 
@@ -425,7 +499,7 @@ Or manually: `infra/domain-setup/` (Caddy reverse proxy on ports 80/443).
 
 | Mode | Use Case |
 | --- | --- |
-| `developer` | Clone repo, local app processes, Docker for infra only |
+| `developer` | Clone repo, local app processes, reachable PostgreSQL and Redis; Docker is optional |
 | `self-host` | Full stack in Docker on localhost rare ports |
 | `production` | Docker stack + Caddy domain layer |
 
@@ -465,6 +539,10 @@ Docs integration page: [headlessx.saify.me/docs/get-started/integrations/nodemav
 - **Ethics**: `docs/ETHICS.md` — responsible scraping, respect robots.txt, throttling, no PII without consent
 - **Code of Conduct**: `docs/CODE_OF_CONDUCT.md`
 - Never commit `.env` files, API keys, or `CREDENTIAL_ENCRYPTION_KEY`
+- Never commit `infra/docker/secrets`, browser profiles, or generated model binaries.
+- Help output proves grammar only. Require `status`/`doctor` and one bounded
+  operator request when accepting a running service; a configuration receipt
+  does not prove authentication or readiness.
 - API keys stored hashed; proxy passwords encrypted with `CREDENTIAL_ENCRYPTION_KEY`
 
 ---
@@ -488,10 +566,15 @@ Docs integration page: [headlessx.saify.me/docs/get-started/integrations/nodemav
 
 Package: `@headlessx-cli/core` (v0.1.24). Command: `headlessx`.
 
+This is the published user-managed CLI, not the owner-installed fixed Tailnet
+client with the same name. Do not install over the owner client. In a source
+checkout, build the CLI package and use `node packages/cli/dist/index.js` for
+the examples below without changing the installed command.
+
 ```bash
 npm install -g @headlessx-cli/core
 headlessx init
-headlessx login --api-url http://localhost:38473 --api-key hx_your_key
+headlessx login --api-url http://localhost:38473  # Interactive key prompt
 headlessx status
 headlessx doctor
 headlessx scrape <url>
@@ -499,7 +582,9 @@ headlessx crawl <url>
 headlessx google "query"
 ```
 
-Agent skill (this repo): `npx skills add https://github.com/saifyxpro/HeadlessX --skill cli`
+Agent skill for this fork: `skills/cli/SKILL.md`. Keep it separate from the
+canonical owner-installed fixed Tailnet HeadlessX skill; do not overwrite that
+client or skill with this published user-managed CLI.
 
 Detailed CLI docs: `docs/CLI.md`, `skills/cli/SKILL.md`.
 

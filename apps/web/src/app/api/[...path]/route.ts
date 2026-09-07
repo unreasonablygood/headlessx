@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import { getDashboardInternalApiKey } from '@/lib/dashboardInternalApiKey';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,10 +9,6 @@ type RouteContext = {
 
 function getBackendApiUrl() {
     return process.env.INTERNAL_API_URL?.trim() || process.env.NEXT_PUBLIC_API_URL?.trim() || null;
-}
-
-function getDashboardInternalApiKey() {
-    return process.env.DASHBOARD_INTERNAL_API_KEY?.trim() || null;
 }
 
 function buildBackendUrl(request: NextRequest, backendApiUrl: string, path: string[]): URL {
@@ -52,7 +49,7 @@ async function proxyRequest(request: NextRequest, context: RouteContext): Promis
 
     if (!dashboardInternalApiKey) {
         return Response.json(
-            { success: false, error: 'DASHBOARD_INTERNAL_API_KEY is not configured' },
+            { success: false, error: 'Dashboard internal runtime credential is unavailable' },
             { status: 500 }
         );
     }

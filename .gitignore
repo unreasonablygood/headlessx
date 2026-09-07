@@ -27,6 +27,9 @@ loga
 *.pem
 *.key
 *.crt
+infra/docker/secrets/
+infra/docker/.headlessx-secrets-*/
+infra/domain-setup/Caddyfile
 
 # PM2
 .pm2/

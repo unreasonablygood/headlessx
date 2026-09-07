@@ -1,15 +1,67 @@
+# Host-published ports default to loopback. Services still communicate over
+# headlessx-network, including the production Caddy layer.
 services:
+  credential-bootstrap:
+    image: alpine:3.21
+    container_name: headlessx-credential-bootstrap
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        install_secret() {
+          name="$$1"
+          directory="$$2"
+          source="/run/secrets/bootstrap-$${name}"
+          target="$${directory}/headlessx-$${name}"
+          temporary="$${target}.tmp"
+          [ -f "$${source}" ] || {
+            echo "HeadlessX credential source $${name} is unavailable." >&2
+            exit 1
+          }
+          cp "$${source}" "$${temporary}"
+          chown 0:0 "$${temporary}"
+          chmod 0400 "$${temporary}"
+          mv -f "$${temporary}" "$${target}"
+        }
+        umask 077
+        install_secret postgres-password /runtime/postgres
+        install_secret postgres-password /runtime/api
+        install_secret postgres-password /runtime/worker
+        install_secret dashboard-internal-api-key /runtime/api
+        install_secret dashboard-internal-api-key /runtime/worker
+        install_secret dashboard-internal-api-key /runtime/web
+        install_secret credential-encryption-key /runtime/api
+        install_secret credential-encryption-key /runtime/worker
+        install_secret evidence-api-key /runtime/api
+    network_mode: none
+    read_only: true
+    secrets:
+      - bootstrap-postgres-password
+      - bootstrap-dashboard-internal-api-key
+      - bootstrap-credential-encryption-key
+      - bootstrap-evidence-api-key
+    volumes:
+      - postgres_secrets:/runtime/postgres
+      - api_secrets:/runtime/api
+      - worker_secrets:/runtime/worker
+      - web_secrets:/runtime/web
+    profiles: ["db", "api", "queue", "web", "all"]
+
   postgres:
     image: postgres:15-alpine
     container_name: headlessx-postgres
+    depends_on:
+      credential-bootstrap:
+        condition: service_completed_successfully
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD_FILE: /run/secrets/headlessx-postgres-password
       POSTGRES_DB: ${POSTGRES_DB:-headlessx}
     ports:
-      - "${POSTGRES_HOST_PORT:-35432}:5432"
+      - "${HEADLESSX_HOST_BIND:-127.0.0.1}:${POSTGRES_HOST_PORT:-35432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - postgres_secrets:/run/secrets:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-headlessx}"]
       interval: 10s
@@ -23,7 +75,7 @@ services:
     image: redis:7-alpine
     container_name: headlessx-redis
     ports:
-      - "${REDIS_HOST_PORT:-36379}:6379"
+      - "${HEADLESSX_HOST_BIND:-127.0.0.1}:${REDIS_HOST_PORT:-36379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -41,7 +93,7 @@ services:
     environment:
       - PORT=8080
     ports:
-      - "${HTML_TO_MARKDOWN_HOST_PORT:-38081}:8080"
+      - "${HEADLESSX_HOST_BIND:-127.0.0.1}:${HTML_TO_MARKDOWN_HOST_PORT:-38081}:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
       interval: 10s
@@ -61,7 +113,7 @@ services:
       - YT_ENGINE_TEMP_DIR=${YT_ENGINE_TEMP_DIR:-/app/tmp/yt-engine}
       - YT_ENGINE_JOB_TTL_HOURS=${YT_ENGINE_JOB_TTL_HOURS:-12}
     ports:
-      - "${YT_ENGINE_HOST_PORT:-38090}:8090"
+      - "${HEADLESSX_HOST_BIND:-127.0.0.1}:${YT_ENGINE_HOST_PORT:-38090}:8090"
     volumes:
       - yt_engine_tmp:/app/tmp/yt-engine
     healthcheck:
@@ -79,6 +131,8 @@ services:
       dockerfile: infra/docker/api.Dockerfile
     container_name: headlessx-api
     depends_on:
+      credential-bootstrap:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -88,7 +142,8 @@ services:
       yt-engine:
         condition: service_healthy
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-headlessx}?schema=public
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-headlessx}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - HTML_TO_MARKDOWN_SERVICE_URL=${HTML_TO_MARKDOWN_SERVICE_URL:-http://html-to-md:8080}
       - HTML_TO_MARKDOWN_TIMEOUT_MS=${HTML_TO_MARKDOWN_TIMEOUT_MS:-60000}
@@ -97,8 +152,6 @@ services:
       - NODE_ENV=production
       - WEB_PORT=${WEB_PORT:-3000}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:34872}
-      - DASHBOARD_INTERNAL_API_KEY=${DASHBOARD_INTERNAL_API_KEY}
-      - CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
       - EXA_API_KEY=${EXA_API_KEY:-}
       - YT_ENGINE_URL=${YT_ENGINE_URL:-http://yt-engine:8090}
@@ -111,7 +164,7 @@ services:
       - QUEUE_JOB_BACKOFF_MS=${QUEUE_JOB_BACKOFF_MS:-5000}
       - QUEUE_STREAM_POLL_MS=${QUEUE_STREAM_POLL_MS:-1000}
     ports:
-      - "${API_HOST_PORT:-38473}:${PORT:-8000}"
+      - "${HEADLESSX_HOST_BIND:-127.0.0.1}:${API_HOST_PORT:-38473}:${PORT:-8000}"
     healthcheck:
       test:
         [
@@ -127,6 +180,7 @@ services:
     volumes:
       - ../../apps/api/models:/app/apps/api/models
       - browser_profile:/app/apps/api/data/browser-profile
+      - api_secrets:/run/secrets:ro
     networks:
       - headlessx-network
     profiles: ["api", "all"]
@@ -137,6 +191,8 @@ services:
       dockerfile: infra/docker/api.Dockerfile
     container_name: headlessx-worker
     depends_on:
+      credential-bootstrap:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -145,14 +201,13 @@ services:
         condition: service_healthy
     command: ["/usr/local/bin/headlessx-worker-entrypoint"]
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-headlessx}?schema=public
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-headlessx}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - HTML_TO_MARKDOWN_SERVICE_URL=${HTML_TO_MARKDOWN_SERVICE_URL:-http://html-to-md:8080}
       - HTML_TO_MARKDOWN_TIMEOUT_MS=${HTML_TO_MARKDOWN_TIMEOUT_MS:-60000}
       - HOST=${HOST:-0.0.0.0}
       - NODE_ENV=production
-      - DASHBOARD_INTERNAL_API_KEY=${DASHBOARD_INTERNAL_API_KEY}
-      - CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
       - EXA_API_KEY=${EXA_API_KEY:-}
       - YT_ENGINE_URL=${YT_ENGINE_URL:-http://yt-engine:8090}
@@ -166,6 +221,7 @@ services:
       - QUEUE_STREAM_POLL_MS=${QUEUE_STREAM_POLL_MS:-1000}
     volumes:
       - ../../apps/api/models:/app/apps/api/models
+      - worker_secrets:/run/secrets:ro
     networks:
       - headlessx-network
     profiles: ["queue", "all"]
@@ -183,14 +239,29 @@ services:
       - INTERNAL_API_URL=${INTERNAL_API_URL:-http://api:8000}
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:38473}
       - NODE_ENV=production
-      - DASHBOARD_INTERNAL_API_KEY=${DASHBOARD_INTERNAL_API_KEY}
+    volumes:
+      - web_secrets:/run/secrets:ro
     ports:
-      - "${WEB_HOST_PORT:-34872}:3000"
+      - "${HEADLESSX_HOST_BIND:-127.0.0.1}:${WEB_HOST_PORT:-34872}:3000"
     networks:
       - headlessx-network
     profiles: ["web", "all"]
 
+secrets:
+  bootstrap-postgres-password:
+    file: ./secrets/postgres-password
+  bootstrap-dashboard-internal-api-key:
+    file: ./secrets/dashboard-internal-api-key
+  bootstrap-credential-encryption-key:
+    file: ./secrets/credential-encryption-key
+  bootstrap-evidence-api-key:
+    file: ./secrets/evidence-api-key
+
 volumes:
+  postgres_secrets:
+  api_secrets:
+  worker_secrets:
+  web_secrets:
   pgdata:
   browser_profile:
   yt_engine_tmp:
