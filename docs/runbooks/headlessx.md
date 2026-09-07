@@ -26,6 +26,29 @@ lifecycle repair, verify the init process and compare in-container zombie
 counts before and after repeated direct and WebDocument captures. Docker
 `top` alone is insufficient because its cgroup process list omits zombies.
 
+### Init-only incident activation
+
+The current stack embeds PostgreSQL. A normal Coolify application deployment
+replaces the whole stack; do not use it for this API-only repair. Separate the
+database lifecycle before resuming whole-application deployments.
+
+For the owner-authorized init-only incident repair, retain the running API
+image and use the existing provider-rendered Compose configuration at
+`/data/coolify/applications/bs00lje88r6kest212hp8i6b/docker-compose.yaml`.
+Pass a stdin override containing only `services.api.init: true`, select the
+existing project `bs00lje88r6kest212hp8i6b`, and use
+`up --detach --no-deps --no-build api`. First use Compose's `--dry-run` and
+require that only the API would be recreated. Do not read or print environment
+files, rendered configuration, or credential values.
+
+Record every application container's identity and start time before activation.
+Afterward, require the same API image, Docker init as PID 1, unchanged
+non-API containers, and successful repeated direct and WebDocument captures
+without zombie accumulation. This is configuration activation, not a newly
+built API image or a Coolify deployment receipt. Keep the image's original
+source identity honest; retain the checked Compose source as the durable init
+setting rather than creating a permanent override file.
+
 ## Credential ownership
 
 The host selects an atomically installed generation under
