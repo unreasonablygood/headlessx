@@ -10,342 +10,212 @@
  *   loadtest.ts load --url U [--concurrency N] [--total N]
  *     [--endpoint html|html-js|content] [--stealth]
  *     [--timeout-ms N] [--wait-for-selector S]
- *   loadtest.ts evidence --urls U1,U2,... [--concurrency N] [--total N]
- *     [--timeout-ms N]
  *
  * Defaults: concurrency 5, total 20, endpoint html-js, stealth (html-js default).
  * Reports: req/min, p50/p95 latency, error rate, and HTTP status histogram.
  */
 const BASE = 'http://100.83.166.127:38473';
 const SCRAPE_BASE = '/api/operators/website/scrape';
-const EVIDENCE_PATH = '/api/operators/website/evidence';
 
 // ----------------------------- minimal redactor -----------------------------
 
 /** Scrub credential-shaped material from any upstream error body. */
 function redact(text: string): string {
-    if (!text) return text;
-    return text
-        .replace(/[A-Za-z0-9._:-]{40,}/g, '<redacted>')
-        .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1<redacted>')
-        .replace(/(x-api-key["']?\s*[:=]\s*["']?)[A-Za-z0-9._~+/=-]+/gi, '$1<redacted>')
-        .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '<jwt>');
+  if (!text) return text;
+  return text
+    .replace(/[A-Za-z0-9._:-]{40,}/g, '<redacted>')
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1<redacted>')
+    .replace(/(x-api-key["']?\s*[:=]\s*["']?)[A-Za-z0-9._~+/=-]+/gi, '$1<redacted>')
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '<jwt>');
 }
 
 // ----------------------------- arg parsing -----------------------------
 
 interface Args {
-    positional: string[];
-    flags: Record<string, string | true>;
+  positional: string[];
+  flags: Record<string, string | true>;
 }
 function parseArgs(argv: string[]): Args {
-    const positional: string[] = [];
-    const flags: Record<string, string | true> = {};
-    for (let i = 0; i < argv.length; i++) {
-        const a = argv[i];
-        if (a.startsWith('--')) {
-            const k = a.slice(2);
-            const next = argv[i + 1];
-            if (next !== undefined && !next.startsWith('--')) {
-                flags[k] = next;
-                i++;
-            } else flags[k] = true;
-        } else positional.push(a);
-    }
-    return { positional, flags };
+  const positional: string[] = [];
+  const flags: Record<string, string | true> = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith('--')) {
+      const k = a.slice(2);
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('--')) {
+        flags[k] = next;
+        i++;
+      } else flags[k] = true;
+    } else positional.push(a);
+  }
+  return { positional, flags };
 }
 function flagStr(f: Record<string, string | true>, k: string): string | undefined {
-    const v = f[k];
-    if (v === true) {
-        console.error(`Error: --${k} requires a value.`);
-        process.exit(2);
-    }
-    return v;
+  const v = f[k];
+  if (v === true) {
+    console.error(`Error: --${k} requires a value.`);
+    process.exit(2);
+  }
+  return v;
 }
 function flagInt(f: Record<string, string | true>, k: string, def: number): number {
-    const v = f[k];
-    if (v === undefined) return def;
-    if (v === true) {
-        console.error(`Error: --${k} requires a number.`);
-        process.exit(2);
-    }
-    const n = Number(v);
-    if (!Number.isFinite(n)) {
-        console.error(`Error: --${k} must be a number, got "${v}".`);
-        process.exit(2);
-    }
-    return n;
+  const v = f[k];
+  if (v === undefined) return def;
+  if (v === true) {
+    console.error(`Error: --${k} requires a number.`);
+    process.exit(2);
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n)) {
+    console.error(`Error: --${k} must be a number, got "${v}".`);
+    process.exit(2);
+  }
+  return n;
 }
 
 async function fetchJson(
-    path: string,
-    init: RequestInit,
-    timeoutMs = 15000
+  path: string,
+  init: RequestInit,
+  timeoutMs = 15000,
 ): Promise<{ status: number; body: string }> {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-        const res = await fetch(`${BASE}${path}`, { ...init, signal: ctrl.signal });
-        const body = await res.text();
-        return { status: res.status, body };
-    } finally {
-        clearTimeout(t);
-    }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${BASE}${path}`, { ...init, signal: ctrl.signal });
+    const body = await res.text();
+    return { status: res.status, body };
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 // ----------------------------- load test -----------------------------
 
 interface Sample {
-    ok: boolean;
-    status: number;
-    latencyMs: number;
-    error?: string;
+  ok: boolean;
+  status: number;
+  latencyMs: number;
+  error?: string;
 }
 
 async function oneRequest(
-    url: string,
-    endpoint: string,
-    opts: { stealth?: boolean; timeoutMs: number; waitForSelector?: string }
+  url: string,
+  endpoint: string,
+  opts: { stealth?: boolean; timeoutMs: number; waitForSelector?: string },
 ): Promise<Sample> {
-    const start = Date.now();
-    const reqBody: Record<string, unknown> = { url };
-    if (opts.waitForSelector) reqBody.waitForSelector = opts.waitForSelector;
-    if (opts.timeoutMs) reqBody.timeout = opts.timeoutMs;
-    if (opts.stealth !== undefined) reqBody.stealth = opts.stealth;
-    try {
-        const { status, body } = await fetchJson(
-            `${SCRAPE_BASE}/${endpoint}`,
-            {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(reqBody)
-            },
-            opts.timeoutMs + 30000
-        );
-        const ok = status >= 200 && status < 300;
-        return {
-            ok,
-            status,
-            latencyMs: Date.now() - start,
-            error: ok ? undefined : redact(body.slice(0, 120))
-        };
-    } catch (e) {
-        return {
-            ok: false,
-            status: 0,
-            latencyMs: Date.now() - start,
-            error: e instanceof Error ? e.message : String(e)
-        };
-    }
+  const start = Date.now();
+  const reqBody: Record<string, unknown> = { url };
+  if (opts.waitForSelector) reqBody.waitForSelector = opts.waitForSelector;
+  if (opts.timeoutMs) reqBody.timeout = opts.timeoutMs;
+  if (opts.stealth !== undefined) reqBody.stealth = opts.stealth;
+  try {
+    const { status, body } = await fetchJson(
+      `${SCRAPE_BASE}/${endpoint}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(reqBody),
+      },
+      opts.timeoutMs + 30000,
+    );
+    const ok = status >= 200 && status < 300;
+    return {
+      ok,
+      status,
+      latencyMs: Date.now() - start,
+      error: ok ? undefined : redact(body.slice(0, 120)),
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      status: 0,
+      latencyMs: Date.now() - start,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
 }
 
 function percentile(sorted: number[], p: number): number {
-    if (sorted.length === 0) return 0;
-    const idx = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
-    return sorted[Math.max(0, idx)];
+  if (sorted.length === 0) return 0;
+  const idx = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
+  return sorted[Math.max(0, idx)];
 }
 
 async function cmdLoad(flags: Record<string, string | true>): Promise<void> {
-    const url = flagStr(flags, 'url');
-    if (!url) {
-        console.error('Error: --url is required');
-        process.exit(2);
-    }
-    const concurrency = flagInt(flags, 'concurrency', 5);
-    const total = flagInt(flags, 'total', 20);
-    const endpoint = flagStr(flags, 'endpoint') ?? 'html-js';
-    const stealthFlag = flags.stealth;
-    const stealth = stealthFlag === undefined ? undefined : stealthFlag === true;
-    const timeoutMs = flagInt(flags, 'timeout-ms', 60000);
-    const waitForSelector = flagStr(flags, 'wait-for-selector');
+  const url = flagStr(flags, 'url');
+  if (!url) {
+    console.error('Error: --url is required');
+    process.exit(2);
+  }
+  const concurrency = flagInt(flags, 'concurrency', 5);
+  const total = flagInt(flags, 'total', 20);
+  const endpoint = flagStr(flags, 'endpoint') ?? 'html-js';
+  const stealthFlag = flags.stealth;
+  const stealth = stealthFlag === undefined ? undefined : stealthFlag === true;
+  const timeoutMs = flagInt(flags, 'timeout-ms', 60000);
+  const waitForSelector = flagStr(flags, 'wait-for-selector');
 
-    console.log(
-        `load: url=${url} endpoint=${endpoint} concurrency=${concurrency} total=${total} stealth=${stealth} timeout=${timeoutMs}ms`
-    );
-    const samples: Sample[] = [];
-    let issued = 0;
-    const tStart = Date.now();
-    // Simple concurrency pool: keep `concurrency` in flight until `total` issued.
-    async function worker() {
-        while (issued < total) {
-            issued++;
-            const s = await oneRequest(url, endpoint, { stealth, timeoutMs, waitForSelector });
-            samples.push(s);
-        }
+  console.log(
+    `load: url=${url} endpoint=${endpoint} concurrency=${concurrency} total=${total} stealth=${stealth} timeout=${timeoutMs}ms`,
+  );
+  const samples: Sample[] = [];
+  let issued = 0;
+  const tStart = Date.now();
+  // Simple concurrency pool: keep `concurrency` in flight until `total` issued.
+  async function worker() {
+    while (issued < total) {
+      issued++;
+      const s = await oneRequest(url, endpoint, { stealth, timeoutMs, waitForSelector });
+      samples.push(s);
     }
-    const workers = Array.from({ length: concurrency }, () => worker());
-    await Promise.all(workers);
-    const elapsedSec = (Date.now() - tStart) / 1000;
-    const ok = samples.filter(s => s.ok);
-    const lat = samples.map(s => s.latencyMs).sort((a, b) => a - b);
-    const hist: Record<string, number> = {};
-    for (const s of samples) hist[String(s.status)] = (hist[String(s.status)] || 0) + 1;
-    const out = {
-        requested: total,
-        completed: samples.length,
-        ok: ok.length,
-        errors: samples.length - ok.length,
-        errorRate: `${(((samples.length - ok.length) / samples.length) * 100).toFixed(1)}%`,
-        elapsedSec: +elapsedSec.toFixed(1),
-        reqPerMin: +((samples.length / elapsedSec) * 60).toFixed(1),
-        latencyMs: {
-            p50: percentile(lat, 50),
-            p90: percentile(lat, 90),
-            p95: percentile(lat, 95),
-            max: lat[lat.length - 1] ?? 0
-        },
-        statusHistogram: hist,
-        firstErrors: samples
-            .filter(s => !s.ok)
-            .slice(0, 3)
-            .map(s => `${s.status}: ${s.error}`)
-    };
-    console.log(JSON.stringify(out, null, 2));
-}
-
-interface EvidenceSample extends Sample {
-    queueMs?: number;
-    renderMs?: number;
-    activeConcurrency?: number;
-    maxConcurrency?: number;
-    queuedRequests?: number;
-}
-
-async function oneEvidenceRequest(url: string, timeoutMs: number): Promise<EvidenceSample> {
-    const start = Date.now();
-    try {
-        const { status, body } = await fetchJson(
-            EVIDENCE_PATH,
-            {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                    url,
-                    kind: 'document',
-                    timeoutMs,
-                    maxBytes: 8 * 1024 * 1024
-                })
-            },
-            timeoutMs + 30000
-        );
-        const ok = status >= 200 && status < 300;
-        if (!ok) {
-            return {
-                ok,
-                status,
-                latencyMs: Date.now() - start,
-                error: redact(body.slice(0, 120))
-            };
-        }
-        let metrics: Partial<EvidenceSample> = {};
-        try {
-            const parsed = JSON.parse(body) as { metrics?: Partial<EvidenceSample> };
-            metrics = parsed.metrics ?? {};
-        } catch {
-            return {
-                ok: false,
-                status,
-                latencyMs: Date.now() - start,
-                error: 'invalid evidence response'
-            };
-        }
-        return { ok, status, latencyMs: Date.now() - start, ...metrics };
-    } catch (e) {
-        return {
-            ok: false,
-            status: 0,
-            latencyMs: Date.now() - start,
-            error: e instanceof Error ? e.message : String(e)
-        };
-    }
-}
-
-async function cmdEvidence(flags: Record<string, string | true>): Promise<void> {
-    const rawUrls = flagStr(flags, 'urls');
-    if (!rawUrls) {
-        console.error('Error: --urls is required (comma-separated public URLs)');
-        process.exit(2);
-    }
-    const urls = rawUrls
-        .split(',')
-        .map(url => url.trim())
-        .filter(Boolean);
-    if (urls.length === 0) {
-        console.error('Error: --urls must contain at least one URL');
-        process.exit(2);
-    }
-    const concurrency = flagInt(flags, 'concurrency', 24);
-    const total = flagInt(flags, 'total', 24);
-    const timeoutMs = flagInt(flags, 'timeout-ms', 55000);
-    console.log(`evidence: urls=${urls.join(',')} concurrency=${concurrency} total=${total} timeout=${timeoutMs}ms`);
-    const samples: EvidenceSample[] = [];
-    let issued = 0;
-    const tStart = Date.now();
-    async function worker() {
-        while (issued < total) {
-            const index = issued++;
-            const sample = await oneEvidenceRequest(urls[index % urls.length], timeoutMs);
-            samples.push(sample);
-        }
-    }
-    await Promise.all(Array.from({ length: concurrency }, () => worker()));
-    const elapsedSec = (Date.now() - tStart) / 1000;
-    const lat = samples.map(sample => sample.latencyMs).sort((a, b) => a - b);
-    const ok = samples.filter(sample => sample.ok);
-    const hist: Record<string, number> = {};
-    for (const sample of samples) hist[String(sample.status)] = (hist[String(sample.status)] || 0) + 1;
-    console.log(
-        JSON.stringify(
-            {
-                requested: total,
-                completed: samples.length,
-                ok: ok.length,
-                errors: samples.length - ok.length,
-                errorRate: `${(((samples.length - ok.length) / samples.length) * 100).toFixed(1)}%`,
-                elapsedSec: +elapsedSec.toFixed(1),
-                reqPerMin: +((samples.length / elapsedSec) * 60).toFixed(1),
-                latencyMs: {
-                    p50: percentile(lat, 50),
-                    p90: percentile(lat, 90),
-                    p95: percentile(lat, 95),
-                    max: lat[lat.length - 1] ?? 0
-                },
-                evidenceMetrics: {
-                    maxActiveConcurrency: Math.max(0, ...ok.map(sample => sample.activeConcurrency ?? 0)),
-                    configuredMaxConcurrency: Math.max(0, ...ok.map(sample => sample.maxConcurrency ?? 0)),
-                    maxQueueDepth: Math.max(0, ...ok.map(sample => sample.queuedRequests ?? 0)),
-                    maxQueueMs: Math.max(0, ...ok.map(sample => sample.queueMs ?? 0)),
-                    maxRenderMs: Math.max(0, ...ok.map(sample => sample.renderMs ?? 0))
-                },
-                statusHistogram: hist,
-                firstErrors: samples
-                    .filter(sample => !sample.ok)
-                    .slice(0, 3)
-                    .map(sample => `${sample.status}: ${sample.error}`)
-            },
-            null
-        )
-    );
+  }
+  const workers = Array.from({ length: concurrency }, () => worker());
+  await Promise.all(workers);
+  const elapsedSec = (Date.now() - tStart) / 1000;
+  const ok = samples.filter((s) => s.ok);
+  const lat = samples.map((s) => s.latencyMs).sort((a, b) => a - b);
+  const hist: Record<string, number> = {};
+  for (const s of samples) hist[String(s.status)] = (hist[String(s.status)] || 0) + 1;
+  const out = {
+    requested: total,
+    completed: samples.length,
+    ok: ok.length,
+    errors: samples.length - ok.length,
+    errorRate: `${(((samples.length - ok.length) / samples.length) * 100).toFixed(1)}%`,
+    elapsedSec: +elapsedSec.toFixed(1),
+    reqPerMin: +((samples.length / elapsedSec) * 60).toFixed(1),
+    latencyMs: {
+      p50: percentile(lat, 50),
+      p90: percentile(lat, 90),
+      p95: percentile(lat, 95),
+      max: lat[lat.length - 1] ?? 0,
+    },
+    statusHistogram: hist,
+    firstErrors: samples
+      .filter((s) => !s.ok)
+      .slice(0, 3)
+      .map((s) => `${s.status}: ${s.error}`),
+  };
+  console.log(JSON.stringify(out, null, 2));
 }
 
 // ----------------------------- main -----------------------------
 
 async function main() {
-    const { positional, flags } = parseArgs(process.argv.slice(2));
-    const cmd = positional[0];
-    switch (cmd) {
-        case 'load':
-            return cmdLoad(flags);
-        case 'evidence':
-            return cmdEvidence(flags);
-        default:
-            console.error(
-                'Usage: loadtest.ts load --url U [--concurrency N --total N --endpoint html|html-js|content --stealth --timeout-ms N]'
-            );
-            process.exit(2);
-    }
+  const { positional, flags } = parseArgs(process.argv.slice(2));
+  const cmd = positional[0];
+  switch (cmd) {
+    case 'load':
+      return cmdLoad(flags);
+    default:
+      console.error(
+        'Usage: loadtest.ts load --url U [--concurrency N --total N --endpoint html|html-js|content --stealth --timeout-ms N]',
+      );
+      process.exit(2);
+  }
 }
-main().catch(e => {
-    console.error('Fatal:', redact(e instanceof Error ? e.message : String(e)));
-    process.exit(1);
+main().catch((e) => {
+  console.error('Fatal:', redact(e instanceof Error ? e.message : String(e)));
+  process.exit(1);
 });
