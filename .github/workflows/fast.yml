@@ -13,7 +13,7 @@ permissions:
 jobs:
   fast:
     name: fast
-    runs-on: [self-hosted, fleet-ci-general, fleet-ci-small-linux-x64]
+    runs-on: [self-hosted, ml-infra-01, fleet-ci-general, fleet-ci-small-linux-x64]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
