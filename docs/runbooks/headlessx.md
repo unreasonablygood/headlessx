@@ -18,6 +18,12 @@ fixed Tailnet listener `100.83.166.127:38473`.
 The production Compose runs the API, PostgreSQL, Redis, HTML-to-Markdown, and
 YouTube engine. Only the API port is published. Internal dependencies remain on
 the isolated `headlessx-network`.
+The Compose host binding is parameterized for approved cloned nodes:
+`API_BIND_ADDRESS` selects the node's verified Tailnet listener and
+`API_HOST_PORT` selects its fixed listener port. The primary deployment keeps
+the defaults above; a clone MUST set both values through its reviewed
+deployment configuration before it is started. An unset or unverified bind
+address is not an acceptable capacity endpoint.
 
 ## Credential ownership
 
