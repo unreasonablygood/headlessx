@@ -2,9 +2,9 @@ name: fast
 
 on:
   pull_request:
-    branches: [master]
+    branches: [master, main]
   push:
-    branches: [master]
+    branches: [master, main]
 
 permissions:
   contents: read
@@ -12,7 +12,7 @@ permissions:
 jobs:
   fast:
     name: fast
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, fleet-ci-general, fleet-ci-small-linux-x64]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
