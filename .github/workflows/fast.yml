@@ -5,7 +5,8 @@ on:
   pull_request:
     branches: [master]
   push:
-    branches: [master]
+    # lander/candidate-N: batches the lander tests before landing them.
+    branches: [master, "lander/candidate-*"]
 
 permissions:
   contents: read
